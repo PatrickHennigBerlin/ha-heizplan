@@ -89,13 +89,22 @@ def _register_services(hass: HomeAssistant) -> None:
     async def set_override(call: ServiceCall) -> None:
         manager = get_manager(hass)
         room_id = _resolve_room(manager, call.data["room"])
-        await manager.async_set_override(
-            room_id, call.data["temperature"], call.data.get("minutes", 120)
-        )
+        value = call.data["on"] if "on" in call.data else call.data.get("temperature")
+        if value is None:
+            raise ServiceValidationError("temperature oder on angeben")
+        await manager.async_set_override(room_id, value, call.data.get("minutes", 120))
 
     async def clear_override(call: ServiceCall) -> None:
         manager = get_manager(hass)
         await manager.async_clear_override(_resolve_room(manager, call.data["room"]))
+
+    async def update_room(call: ServiceCall) -> None:
+        manager = get_manager(hass)
+        await manager.async_update_room(
+            _resolve_room(manager, call.data["room"]),
+            call.data.get("name"), call.data.get("valve"),
+            call.data.get("follow_season"), call.data.get("months"),
+        )
 
     async def import_scheduler(call: ServiceCall) -> dict:
         try:
@@ -115,13 +124,28 @@ def _register_services(hass: HomeAssistant) -> None:
         schema=vol.Schema(
             {
                 vol.Required("room"): cv.string,
-                vol.Required("temperature"): vol.All(vol.Coerce(float), vol.Range(5, 30)),
+                vol.Exclusive("temperature", "value"): vol.All(vol.Coerce(float), vol.Range(5, 30)),
+                vol.Exclusive("on", "value"): cv.boolean,
                 vol.Optional("minutes", default=120): vol.All(vol.Coerce(int), vol.Range(1, 7 * 24 * 60)),
             }
         ),
     )
     hass.services.async_register(
         DOMAIN, "clear_override", clear_override, schema=vol.Schema({vol.Required("room"): cv.string})
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "update_room",
+        update_room,
+        schema=vol.Schema(
+            {
+                vol.Required("room"): cv.string,
+                vol.Optional("name"): cv.string,
+                vol.Optional("valve"): cv.string,
+                vol.Optional("follow_season"): cv.boolean,
+                vol.Optional("months"): [vol.All(vol.Coerce(int), vol.Range(1, 12))],
+            }
+        ),
     )
     hass.services.async_register(
         DOMAIN,

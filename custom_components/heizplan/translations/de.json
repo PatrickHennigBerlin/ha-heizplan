@@ -54,6 +54,10 @@
         "minutes": {
           "name": "Minuten",
           "description": "Dauer"
+        },
+        "on": {
+          "name": "An/Aus",
+          "description": "Für Schalt-Räume (z. B. Fußbodenheizung)"
         }
       }
     },
@@ -78,6 +82,32 @@
         "create_rooms": {
           "name": "Räume anlegen",
           "description": "Fehlende Räume automatisch anlegen"
+        }
+      }
+    },
+    "update_room": {
+      "name": "Raum ändern",
+      "description": "Name, Ventil-Sensor, Heizperiode folgen, aktive Monate",
+      "fields": {
+        "room": {
+          "name": "Raum",
+          "description": "Raum-ID, Name oder Entity"
+        },
+        "name": {
+          "name": "Name",
+          "description": ""
+        },
+        "valve": {
+          "name": "Ventil-Sensor",
+          "description": ""
+        },
+        "follow_season": {
+          "name": "Heizperiode folgen",
+          "description": "Aus = unabhängig von der Heizperiode"
+        },
+        "months": {
+          "name": "Aktive Monate",
+          "description": "z. B. 10,11,12,1,2,3,4"
         }
       }
     }

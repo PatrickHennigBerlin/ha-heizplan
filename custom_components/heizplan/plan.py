@@ -52,49 +52,73 @@ def _temp(value: Any) -> float:
     return temp
 
 
-def normalize_day(blocks: list[dict[str, Any]], fallback_temp: float) -> list[dict[str, Any]]:
+KIND_CLIMATE = "climate"   # Blöcke mit "temp" (°C)
+KIND_SWITCH = "switch"     # Blöcke mit "on" (True/False), z. B. Fußbodenheizung
+
+
+def _onoff(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str) and value.lower() in ("on", "an", "ein", "true", "1"):
+        return True
+    if isinstance(value, str) and value.lower() in ("off", "aus", "false", "0"):
+        return False
+    raise PlanError(f"Ungültiger Schaltwert: {value!r}")
+
+
+def block_value(block: dict[str, Any]) -> float | bool:
+    """Wert eines Blocks: Temperatur (float) oder Ein/Aus (bool)."""
+    if "on" in block:
+        return bool(block["on"])
+    return float(block["temp"])
+
+
+def normalize_day(blocks: list[dict[str, Any]], fallback: Any, kind: str = KIND_CLIMATE) -> list[dict[str, Any]]:
     """Sortiert, prüft, fasst gleiche Nachbarn zusammen, sorgt für Block um 00:00."""
     if not isinstance(blocks, list):
         raise PlanError("Tag muss eine Liste von Blöcken sein")
-    parsed: dict[int, float] = {}
+    key = "on" if kind == KIND_SWITCH else "temp"
+    conv = _onoff if kind == KIND_SWITCH else _temp
+    parsed: dict[int, Any] = {}
     for block in blocks:
         if not isinstance(block, dict):
             raise PlanError("Block muss ein Objekt sein")
         start = _parse_hhmm(block.get("start", ""))
         if start >= 24 * 60:
             continue
-        parsed[start] = _temp(block.get("temp"))
+        parsed[start] = conv(block.get(key))
     if 0 not in parsed:
-        parsed[0] = _temp(fallback_temp)
+        parsed[0] = conv(fallback)
     result: list[dict[str, Any]] = []
     for start in sorted(parsed):
-        temp = parsed[start]
-        if result and result[-1]["temp"] == temp:
+        value = parsed[start]
+        if result and result[-1][key] == value:
             continue  # gleicher Wert wie davor -> zusammenfassen
-        result.append({"start": _fmt(start), "temp": temp})
+        result.append({"start": _fmt(start), key: value})
     return result
 
 
-def normalize_plan(plan: dict[str, Any], fallback_temp: float = 20.0) -> dict[str, list]:
+def normalize_plan(plan: dict[str, Any], fallback: Any = 20.0, kind: str = KIND_CLIMATE) -> dict[str, list]:
     """Prüft einen kompletten Wochenplan."""
     if not isinstance(plan, dict):
         raise PlanError("Plan muss ein Objekt sein")
-    result = {}
-    for day in DAYS:
-        result[day] = normalize_day(plan.get(day, []), fallback_temp)
-    return result
+    return {day: normalize_day(plan.get(day, []), fallback, kind) for day in DAYS}
 
 
-def default_plan(temp: float = 20.0) -> dict[str, list]:
-    return {day: [{"start": "00:00", "temp": float(temp)}] for day in DAYS}
+def default_plan(value: Any = 20.0, kind: str = KIND_CLIMATE) -> dict[str, list]:
+    key = "on" if kind == KIND_SWITCH else "temp"
+    val = bool(value) if kind == KIND_SWITCH else float(value)
+    return {day: [{"start": "00:00", key: val}] for day in DAYS}
 
 
 def _day_key(dt: datetime) -> str:
     return DAYS[dt.weekday()]
 
 
-def block_at(plan: dict[str, list], when: datetime) -> tuple[float, int, int]:
-    """(Temperatur, Blockstart-Minute, Blockende-Minute) für einen Zeitpunkt."""
+def block_at(plan: dict[str, list], when: datetime) -> tuple[float | bool, int, int]:
+    """(Wert, Blockstart-Minute, Blockende-Minute) für einen Zeitpunkt."""
     day = plan[_day_key(when)]
     minute = when.hour * 60 + when.minute
     current = day[0]
@@ -106,15 +130,15 @@ def block_at(plan: dict[str, list], when: datetime) -> tuple[float, int, int]:
             end = _parse_hhmm(day[idx + 1]["start"]) if idx + 1 < len(day) else 24 * 60
         else:
             break
-    return float(current["temp"]), _parse_hhmm(current["start"]), end
+    return block_value(current), _parse_hhmm(current["start"]), end
 
 
-def temp_at(plan: dict[str, list], when: datetime) -> float:
+def temp_at(plan: dict[str, list], when: datetime) -> float | bool:
     return block_at(plan, when)[0]
 
 
-def next_change(plan: dict[str, list], when: datetime) -> tuple[datetime, float] | None:
-    """Nächster Zeitpunkt, an dem sich die Plantemperatur ändert (max. 8 Tage)."""
+def next_change(plan: dict[str, list], when: datetime) -> tuple[datetime, float | bool] | None:
+    """Nächster Zeitpunkt, an dem sich der Planwert ändert (max. 8 Tage)."""
     current = temp_at(plan, when)
     base = when.replace(hour=0, minute=0, second=0, microsecond=0)
     minute_now = when.hour * 60 + when.minute
@@ -124,9 +148,10 @@ def next_change(plan: dict[str, list], when: datetime) -> tuple[datetime, float]
             start = _parse_hhmm(block["start"])
             if offset == 0 and start <= minute_now:
                 continue
-            if float(block["temp"]) != current:
-                return day_start + timedelta(minutes=start), float(block["temp"])
-            current = float(block["temp"])
+            value = block_value(block)
+            if value != current:
+                return day_start + timedelta(minutes=start), value
+            current = value
     return None
 
 
@@ -155,7 +180,8 @@ WEEKDAY_GROUPS = {
 def blocks_from_scheduler(attributes: dict[str, Any]) -> tuple[list[str], list[str], list[dict]]:
     """Liest Wochentage, Ziel-Entities und Blöcke aus einem switch.schedule_* Attributsatz.
 
-    Unterstützt nur climate.set_temperature-Aktionen.
+    Unterstützt climate.set_temperature (-> {"temp"}) und
+    switch/input_boolean turn_on/turn_off (-> {"on"}).
     """
     days: list[str] = []
     for group in attributes.get("weekdays", []):
@@ -167,11 +193,12 @@ def blocks_from_scheduler(attributes: dict[str, Any]) -> tuple[list[str], list[s
     actions = attributes.get("actions", [])
     blocks = []
     for slot, action in zip(slots, actions):
-        if action.get("service") != "climate.set_temperature":
-            continue
-        temp = (action.get("data") or {}).get("temperature")
-        if temp is None:
-            continue
-        start = slot.split(" - ")[0].strip()
-        blocks.append({"start": start[:5], "temp": float(temp)})
+        service = action.get("service", "")
+        start = slot.split(" - ")[0].strip()[:5]
+        if service == "climate.set_temperature":
+            temp = (action.get("data") or {}).get("temperature")
+            if temp is not None:
+                blocks.append({"start": start, "temp": float(temp)})
+        elif service.endswith(".turn_on") or service.endswith(".turn_off"):
+            blocks.append({"start": start, "on": service.endswith(".turn_on")})
     return days, entities, blocks

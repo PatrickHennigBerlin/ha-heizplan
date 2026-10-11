@@ -1,12 +1,13 @@
 /*
- * Heizplan-Karte – Übersicht, Wochenplan-Editor und Vorlagen
+ * Heizplan-Karte – Übersicht, Wochenplan-Editor (je Raum oder alle Räume), Vorlagen
  * gehört zur Integration custom_components/heizplan (wird von ihr ausgeliefert).
  */
-const HP_VERSION = "0.1.0";
+const HP_VERSION = "0.2.0";
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABEL = { mon: "Mo", tue: "Di", wed: "Mi", thu: "Do", fri: "Fr", sat: "Sa", sun: "So" };
 const DAY_LONG = { mon: "Montag", tue: "Dienstag", wed: "Mittwoch", thu: "Donnerstag", fri: "Freitag", sat: "Samstag", sun: "Sonntag" };
 const SNAP = 15; // Minuten
+const ALL = "__all__";
 const PRESET_LABEL = { building_protection: "Frostschutz", standby: "Standby", economy: "Nacht" };
 const SOURCE_LABEL = { plan: "Plan", away: "Abwesend", override: "Manuell", inactive: "Inaktiv" };
 
@@ -15,21 +16,26 @@ const fmtMin = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m
 const fmtT = (t) => (t === null || t === undefined || isNaN(t) ? "–" : Number(t).toLocaleString("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const isSwitch = (room) => room && room.kind === "switch";
 
 function tempColor(t) {
-  // 15 °C blau … 20 °C orange … 25 °C rot
+  // 15 °C blau … 20 °C grün/gelb … 25 °C rot
   const x = clamp((Number(t) - 15) / 10, 0, 1);
   const hue = 215 - x * 215;
   const light = 52 - Math.abs(x - 0.5) * 8;
   return `hsl(${hue.toFixed(0)}, 70%, ${light.toFixed(0)}%)`;
 }
+const valueColor = (v) => (typeof v === "boolean" ? (v ? "#e8590c" : "#9e9e9e") : tempColor(v));
+const valueText = (v, short = false) => (typeof v === "boolean" ? (v ? "An" : "Aus") : `${fmtT(v)}${short ? "°" : " °C"}`);
+
+function blockValue(b) { return "on" in b ? Boolean(b.on) : Number(b.temp); }
 
 function dayBlocks(blocks) {
-  // -> [{start,end,temp,idx}]
+  // -> [{start,end,value,idx}]
   return blocks.map((b, i) => ({
     start: toMin(b.start),
     end: i + 1 < blocks.length ? toMin(blocks[i + 1].start) : 1440,
-    temp: Number(b.temp),
+    value: blockValue(b),
     idx: i,
   }));
 }
@@ -43,8 +49,9 @@ class HeizplanCard extends HTMLElement {
     this._data = null;
     this._tab = "overview";
     this._room = null;
-    this._popup = null; // {day, idx}
-    this._copy = null;  // {day}
+    this._day = todayKey();
+    this._popup = null; // {room, day, idx, value}
+    this._copy = null;  // {room, day}
     this._drag = null;
     this._unsub = null;
     this._error = null;
@@ -52,7 +59,7 @@ class HeizplanCard extends HTMLElement {
 
   setConfig(config) {
     this._config = { view: "overview", ...config };
-    this._tab = this._config.view === "week" ? "week" : this._config.view === "templates" ? "templates" : "overview";
+    this._tab = ["week", "templates"].includes(this._config.view) ? this._config.view : "overview";
     if (config.room) this._room = config.room;
   }
 
@@ -99,7 +106,13 @@ class HeizplanCard extends HTMLElement {
     if (Array.isArray(order) && order.length) {
       return order.map((id) => rooms.find((r) => r.id === id || r.climate === id)).filter(Boolean);
     }
-    return rooms.sort((a, b) => a.name.localeCompare(b.name, "de"));
+    // Heizkörper zuerst (alphabetisch), Schalt-Räume (Fußbodenheizung) danach
+    return rooms.sort((a, b) => (isSwitch(a) - isSwitch(b)) || a.name.localeCompare(b.name, "de"));
+  }
+
+  _roomById(id) {
+    const r = this._data?.rooms?.[id];
+    return r ? { id, ...r } : null;
   }
 
   _currentRoom() {
@@ -109,6 +122,10 @@ class HeizplanCard extends HTMLElement {
   }
 
   _ist(room) {
+    if (isSwitch(room)) {
+      const st = this._hass?.states?.[room.climate];
+      return st ? st.state === "on" : room.status.is_on;
+    }
     const st = this._hass?.states?.[room.climate];
     const v = st?.attributes?.current_temperature;
     return v === undefined ? room.status.current_temp : v;
@@ -122,15 +139,16 @@ class HeizplanCard extends HTMLElement {
     const tomorrow = new Date(now.getTime() + 86400000).toDateString() === d.toDateString();
     const day = sameDay ? "" : tomorrow ? "morgen " : `${DAY_LABEL[todayKey(d)]} `;
     const time = d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
-    return `ab ${day}${time} → ${fmtT(status.next_temp)} °C`;
+    return `ab ${day}${time} → ${valueText(status.next_temp)}`;
   }
 
   // --------------------------------------------------------------- Rendering
   _renderLight() {
-    // nur Ist-Werte aktualisieren (hass-Update), kein kompletter Neuaufbau
     this.shadowRoot.querySelectorAll("[data-ist]").forEach((el) => {
-      const room = this._data?.rooms?.[el.dataset.ist];
-      if (room) el.textContent = fmtT(this._ist({ ...room, id: el.dataset.ist }));
+      const room = this._roomById(el.dataset.ist);
+      if (!room) return;
+      const ist = this._ist(room);
+      el.textContent = isSwitch(room) ? (ist ? "an" : "aus") : fmtT(ist);
     });
   }
 
@@ -143,7 +161,7 @@ class HeizplanCard extends HTMLElement {
     } else if (!this._data) {
       body = `<div class="muted pad">Lade …</div>`;
     } else if (!Object.keys(this._data.rooms).length) {
-      body = `<div class="muted pad">Noch keine Räume. Räume über den Dienst <code>heizplan.import_scheduler</code> übernehmen oder im Tab „Räume“ anlegen.</div>`;
+      body = `<div class="muted pad">Noch keine Räume. Räume über den Dienst <code>heizplan.import_scheduler</code> übernehmen.</div>`;
     } else {
       body = this._tab === "week" ? this._renderWeek() : this._tab === "templates" ? this._renderTemplates() : this._renderOverview();
     }
@@ -181,6 +199,13 @@ class HeizplanCard extends HTMLElement {
       </div>`;
   }
 
+  _miniBar(blocks, nowMin) {
+    return `<div class="bar small">
+      ${blocks.map((b) => `<div class="blk" style="left:${b.start / 14.4}%;width:${(b.end - b.start) / 14.4}%;background:${valueColor(b.value)}"></div>`).join("")}
+      ${nowMin !== null ? `<div class="now" style="left:${nowMin / 14.4}%"></div>` : ""}
+    </div>`;
+  }
+
   _renderOverview() {
     const rooms = this._rooms();
     const now = new Date();
@@ -188,73 +213,108 @@ class HeizplanCard extends HTMLElement {
     const tk = todayKey(now);
     return `<div class="grid">${rooms.map((r) => {
       const s = r.status;
+      const sw = isSwitch(r);
       const ist = this._ist(r);
-      const diff = s.target !== null && ist !== null && ist !== undefined ? ist - s.target : null;
-      const state = diff === null ? "" : diff < -0.5 ? "cold" : diff > 0.5 ? "warm" : "ok";
-      const blocks = dayBlocks(r.plan[tk]);
+      let state = "";
+      if (!sw && s.target !== null && ist !== null && ist !== undefined) {
+        const diff = ist - s.target;
+        state = diff < -0.5 ? "cold" : diff > 0.5 ? "warm" : "ok";
+      }
       const srcText = s.source === "override" && s.override
         ? `Manuell bis ${new Date(s.override.until).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}`
         : SOURCE_LABEL[s.source] || s.source;
+      const istHtml = sw ? (ist ? "an" : "aus") : fmtT(ist);
+      const sollHtml = s.target === null ? "–" : sw ? (s.target ? "An" : "Aus") : fmtT(s.target);
+      const actions = sw
+        ? `<button class="txt" data-ovr-on="${r.id}" data-val="1">2 Std. an</button>
+           <button class="txt" data-ovr-on="${r.id}" data-val="0">2 Std. aus</button>`
+        : `<button class="mini" data-ovr="${r.id}" data-delta="-0.5" title="2 h kühler">−</button>
+           <button class="mini" data-ovr="${r.id}" data-delta="0.5" title="2 h wärmer">+</button>`;
       return `
-        <div class="tile">
+        <div class="tile ${sw ? "switch" : ""}">
           <div class="trow">
             <button class="name link" data-open="${r.id}" title="Wochenplan öffnen">${esc(r.name)}</button>
             <span class="badge ${s.source}">${esc(srcText)}</span>
           </div>
           <div class="temps">
-            <div><div class="lbl">Ist</div><div class="big ${state}" data-ist="${r.id}">${fmtT(ist)}</div></div>
-            <div><div class="lbl">Soll</div><div class="big">${fmtT(s.target)}</div></div>
+            <div><div class="lbl">Ist</div><div class="big ${state}" data-ist="${r.id}">${istHtml}</div></div>
+            <div><div class="lbl">Soll</div><div class="big">${sollHtml}</div></div>
             ${s.valve !== null && s.valve !== undefined ? `<div><div class="lbl">Ventil</div><div class="mid">${Math.round(s.valve)} %</div></div>` : ""}
           </div>
-          <div class="bar small">
-            ${blocks.map((b) => `<div class="blk" style="left:${b.start / 14.4}%;width:${(b.end - b.start) / 14.4}%;background:${tempColor(b.temp)}"></div>`).join("")}
-            <div class="now" style="left:${nowMin / 14.4}%"></div>
-          </div>
-          ${s.climate_preset && s.climate_preset !== "comfort" ? `<div class="warn">Regler steht auf ${esc(PRESET_LABEL[s.climate_preset] || s.climate_preset)} – Soll gilt erst wieder auf Komfort</div>` : ""}
-          <div class="next">${esc(s.source === "plan" ? this._nextText(s) : s.source === "inactive" ? "" : `Plan: ${fmtT(s.plan_temp)} °C`)}</div>
+          ${this._miniBar(dayBlocks(r.plan[tk]), nowMin)}
+          ${!sw && s.climate_preset && s.climate_preset !== "comfort" ? `<div class="warn">Regler steht auf ${esc(PRESET_LABEL[s.climate_preset] || s.climate_preset)} – Soll gilt erst wieder auf Komfort</div>` : ""}
+          <div class="next">${esc(s.source === "plan" ? this._nextText(s) : s.source === "inactive" ? (sw ? "außerhalb der Saison" : "") : `Plan: ${valueText(s.plan_temp)}`)}</div>
           <div class="actions">
-            <button class="mini" data-ovr="${r.id}" data-delta="-0.5" title="2 h kühler">−</button>
-            <button class="mini" data-ovr="${r.id}" data-delta="0.5" title="2 h wärmer">+</button>
-            ${s.source === "override" ? `<button class="txt" data-clear="${r.id}">zurück zum Plan</button>` : `<span class="hint">± für 2 Std.</span>`}
+            ${actions}
+            ${s.source === "override" ? `<button class="txt" data-clear="${r.id}">zurück zum Plan</button>` : sw ? "" : `<span class="hint">± für 2 Std.</span>`}
           </div>
         </div>`;
     }).join("")}</div>`;
   }
 
+  _rowBar(room, day, nowMin) {
+    const blocks = dayBlocks(room.plan[day]);
+    return `
+      <div class="bar" data-room="${room.id}" data-day="${day}">
+        ${blocks.map((b) => `
+          <div class="blk click" data-room="${room.id}" data-day="${day}" data-idx="${b.idx}" style="left:${b.start / 14.4}%;width:${(b.end - b.start) / 14.4}%;background:${valueColor(b.value)}">
+            <span>${valueText(b.value, true)}</span>
+          </div>
+          ${b.idx > 0 ? `<div class="handle" data-room="${room.id}" data-day="${day}" data-idx="${b.idx}" style="left:${b.start / 14.4}%" title="${fmtMin(b.start)} – ziehen zum Verschieben"></div>` : ""}`).join("")}
+        ${nowMin !== null ? `<div class="now" style="left:${nowMin / 14.4}%"></div>` : ""}
+      </div>`;
+  }
+
+  _scale(labelWidth) {
+    const hours = [0, 3, 6, 9, 12, 15, 18, 21, 24];
+    return `<div class="scale"><span style="width:${labelWidth}"></span><div class="ticks">${hours.map((h) => `<span style="left:${h / 0.24}%">${h}</span>`).join("")}</div><span class="sp"></span></div>`;
+  }
+
   _renderWeek() {
-    const room = this._currentRoom();
-    if (!room) return "";
     const rooms = this._rooms();
+    const all = this._room === ALL;
+    const room = all ? null : this._currentRoom();
     const now = new Date();
     const nowMin = now.getHours() * 60 + now.getMinutes();
     const tk = todayKey(now);
-    const hours = [0, 3, 6, 9, 12, 15, 18, 21, 24];
-    const templates = Object.entries(this._data.templates || {});
-    return `
-      <div class="chips">${rooms.map((r) => `<button class="chip ${r.id === room.id ? "on" : ""}" data-room="${r.id}">${esc(r.name)}</button>`).join("")}</div>
+    const chips = `<div class="chips">
+      <button class="chip ${all ? "on" : ""}" data-room-chip="${ALL}">Alle Räume</button>
+      ${rooms.map((r) => `<button class="chip ${!all && r.id === room.id ? "on" : ""}" data-room-chip="${r.id}">${esc(r.name)}</button>`).join("")}
+    </div>`;
+    const legend = `<div class="legend">
+        ${[15, 17, 19, 21, 23, 25].map((t) => `<span><i style="background:${tempColor(t)}"></i>${t}°</span>`).join("")}
+        ${rooms.some(isSwitch) ? `<span><i style="background:${valueColor(true)}"></i>An</span><span><i style="background:${valueColor(false)}"></i>Aus</span>` : ""}
+        <span class="muted">Block antippen = bearbeiten · Kante ziehen = Zeit verschieben</span>
+      </div>`;
+
+    if (all) {
+      const day = this._day;
+      return `${chips}
+        <div class="chips days">${DAYS.map((d) => `<button class="chip ${d === day ? "on" : ""}" data-daychip="${d}">${DAY_LABEL[d]}${d === tk ? " ·" : ""}</button>`).join("")}</div>
+        <div class="week all">
+          ${this._scale("110px")}
+          ${rooms.map((r) => `
+            <div class="row">
+              <button class="rname link" data-room-chip="${r.id}" title="Wochenplan ${esc(r.name)}">${esc(r.name)}</button>
+              ${this._rowBar(r, day, day === tk ? nowMin : null)}
+              <button class="mini" data-copy="${day}" data-copy-room="${r.id}" title="Tag kopieren">⧉</button>
+            </div>`).join("")}
+        </div>
+        ${legend}`;
+    }
+
+    const templates = Object.entries(this._data.templates || {}).filter(([, t]) => (t.kind || "climate") === (room.kind || "climate"));
+    return `${chips}
       <div class="week">
-        <div class="scale"><span></span><div class="ticks">${hours.map((h) => `<span style="left:${h / 0.24}%">${h}</span>`).join("")}</div><span></span></div>
-        ${DAYS.map((d) => {
-          const blocks = dayBlocks(room.plan[d]);
-          return `
+        ${this._scale("24px")}
+        ${DAYS.map((d) => `
             <div class="row ${d === tk ? "today" : ""}">
               <span class="day">${DAY_LABEL[d]}</span>
-              <div class="bar" data-day="${d}">
-                ${blocks.map((b) => `
-                  <div class="blk click" data-day="${d}" data-idx="${b.idx}" style="left:${b.start / 14.4}%;width:${(b.end - b.start) / 14.4}%;background:${tempColor(b.temp)}">
-                    ${(b.end - b.start) >= 90 ? `<span>${fmtT(b.temp)}°</span>` : ""}
-                  </div>
-                  ${b.idx > 0 ? `<div class="handle" data-day="${d}" data-idx="${b.idx}" style="left:${b.start / 14.4}%" title="${fmtMin(b.start)} – ziehen zum Verschieben"></div>` : ""}`).join("")}
-                ${d === tk ? `<div class="now" style="left:${nowMin / 14.4}%"></div>` : ""}
-              </div>
-              <button class="mini" data-copy="${d}" title="Tag kopieren">⧉</button>
-            </div>`;
-        }).join("")}
+              ${this._rowBar(room, d, d === tk ? nowMin : null)}
+              <button class="mini" data-copy="${d}" data-copy-room="${room.id}" title="Tag kopieren">⧉</button>
+            </div>`).join("")}
       </div>
-      <div class="legend">
-        ${[15, 17, 19, 21, 23, 25].map((t) => `<span><i style="background:${tempColor(t)}"></i>${t}°</span>`).join("")}
-        <span class="muted">Block antippen = bearbeiten · Kante ziehen = Zeit verschieben</span>
-      </div>
+      ${legend}
       <div class="tpl">
         <button class="txt" data-save-tpl="${room.id}">Als Vorlage speichern</button>
         ${templates.length ? `
@@ -271,43 +331,52 @@ class HeizplanCard extends HTMLElement {
     if (!templates.length) {
       return `<div class="muted pad">Noch keine Vorlagen. Im Wochenplan eines Raums „Als Vorlage speichern“ wählen.</div>`;
     }
-    return templates.map(([id, t]) => `
+    return templates.map(([id, t]) => {
+      const kind = t.kind || "climate";
+      const fit = rooms.filter((r) => (r.kind || "climate") === kind);
+      return `
       <div class="tplcard">
         <div class="trow"><b>${esc(t.name)}</b>
           <span><button class="txt danger" data-del-tpl="${esc(id)}">Löschen</button></span></div>
         <div class="week compact">
           ${DAYS.map((d) => `
-            <div class="row"><span class="day">${DAY_LABEL[d]}</span>
-              <div class="bar small">${dayBlocks(t.plan[d]).map((b) => `<div class="blk" style="left:${b.start / 14.4}%;width:${(b.end - b.start) / 14.4}%;background:${tempColor(b.temp)}"></div>`).join("")}</div>
-            </div>`).join("")}
+            <div class="row"><span class="day">${DAY_LABEL[d]}</span>${this._miniBar(dayBlocks(t.plan[d]), null)}</div>`).join("")}
         </div>
         <div class="apply">
-          ${rooms.map((r) => `<label><input type="checkbox" data-tpl-room="${esc(id)}" value="${r.id}"> ${esc(r.name)}</label>`).join("")}
+          ${fit.map((r) => `<label><input type="checkbox" data-tpl-room="${esc(id)}" value="${r.id}"> ${esc(r.name)}</label>`).join("")}
           <button class="txt" data-apply-tpl="${esc(id)}">Auf gewählte Räume anwenden</button>
         </div>
-      </div>`).join("");
+      </div>`;
+    }).join("");
   }
 
   _renderPopup() {
-    const room = this._currentRoom();
-    const { day, idx } = this._popup;
-    const blocks = dayBlocks(room.plan[day]);
-    const b = blocks[idx];
+    const { room: roomId, day, idx } = this._popup;
+    const room = this._roomById(roomId);
+    if (!room) return "";
+    const b = dayBlocks(room.plan[day])[idx];
     if (!b) return "";
-    const t = this._popup.temp ?? b.temp;
+    const v = this._popup.value ?? b.value;
+    const sw = isSwitch(room);
+    const valueField = sw
+      ? `<div class="field big-temp">
+           <button class="seg ${v ? "on" : ""}" data-set-on="1">An</button>
+           <button class="seg ${!v ? "on" : ""}" data-set-on="0">Aus</button>
+         </div>`
+      : `<div class="field big-temp">
+           <button class="mini" data-t="-0.5">−</button>
+           <span class="tv" style="color:${tempColor(v)}">${fmtT(v)} °C</span>
+           <button class="mini" data-t="0.5">+</button>
+         </div>`;
     return `
       <div class="overlay" data-close>
         <div class="dialog" data-stop>
           <div class="dtitle">${esc(room.name)} · ${DAY_LONG[day]}</div>
           <div class="field"><label>Von</label>
-            ${idx === 0 ? `<span>00:00</span>` : `<input type="time" step="900" data-f="start" value="${fmtMin(b.start)}">`}
+            ${idx === 0 ? `<span>00:00</span>` : `<input type="time" step="900" data-f="start" value="${this._popup.startVal || fmtMin(b.start)}">`}
             <label>bis</label><span>${b.end === 1440 ? "24:00" : fmtMin(b.end)}</span></div>
-          <div class="field big-temp">
-            <button class="mini" data-t="-0.5">−</button>
-            <span class="tv" style="color:${tempColor(t)}">${fmtT(t)} °C</span>
-            <button class="mini" data-t="0.5">+</button>
-          </div>
-          <div class="field"><label>Neuer Block ab</label><input type="time" step="900" data-f="split" placeholder="hh:mm"></div>
+          ${valueField}
+          <div class="field"><label>Neuer Block ab</label><input type="time" step="900" data-f="split" value="${this._popup.splitVal || ""}"></div>
           <div class="dact">
             ${idx > 0 ? `<button class="txt danger" data-del-block>Block löschen</button>` : "<span></span>"}
             <span>
@@ -320,11 +389,12 @@ class HeizplanCard extends HTMLElement {
   }
 
   _renderCopy() {
-    const { day } = this._copy;
+    const { day, room: roomId } = this._copy;
+    const room = this._roomById(roomId);
     return `
       <div class="overlay" data-close>
         <div class="dialog" data-stop>
-          <div class="dtitle">${DAY_LONG[day]} kopieren nach</div>
+          <div class="dtitle">${esc(room?.name || "")}: ${DAY_LONG[day]} kopieren nach</div>
           <div class="days">${DAYS.filter((d) => d !== day).map((d) => `<label><input type="checkbox" data-copy-day value="${d}"> ${DAY_LABEL[d]}</label>`).join("")}</div>
           <div class="quick">
             <button class="txt" data-pick="mon,tue,wed,thu,fri">Werktage</button>
@@ -341,7 +411,6 @@ class HeizplanCard extends HTMLElement {
   // --------------------------------------------------------------- Aktionen
   _bind() {
     const $ = (sel) => this.shadowRoot.querySelectorAll(sel);
-    // Temperatur-Beschriftung ausblenden, wenn der Block zu schmal ist
     requestAnimationFrame(() => $(".blk span").forEach((sp) => {
       if (sp.parentElement.clientWidth < sp.scrollWidth + 6) sp.style.visibility = "hidden";
     }));
@@ -350,27 +419,30 @@ class HeizplanCard extends HTMLElement {
     $("[data-away]").forEach((el) => el.addEventListener("click", () =>
       this._call({ type: "heizplan/set_away_temp", temp: this._data.away_temp + Number(el.dataset.away) })));
     $("[data-open]").forEach((el) => el.addEventListener("click", () => { this._room = el.dataset.open; this._tab = "week"; this._render(); }));
-    $("[data-room]").forEach((el) => el.addEventListener("click", () => { this._room = el.dataset.room; this._render(); }));
+    $("[data-room-chip]").forEach((el) => el.addEventListener("click", () => { this._room = el.dataset.roomChip; this._render(); }));
+    $("[data-daychip]").forEach((el) => el.addEventListener("click", () => { this._day = el.dataset.daychip; this._render(); }));
     $("[data-ovr]").forEach((el) => el.addEventListener("click", () => {
       const room = this._data.rooms[el.dataset.ovr];
       const base = room.status.target ?? room.status.plan_temp;
       this._call({ type: "heizplan/set_override", room_id: el.dataset.ovr, temp: base + Number(el.dataset.delta), minutes: 120 });
     }));
+    $("[data-ovr-on]").forEach((el) => el.addEventListener("click", () =>
+      this._call({ type: "heizplan/set_override", room_id: el.dataset.ovrOn, on: el.dataset.val === "1", minutes: 120 })));
     $("[data-clear]").forEach((el) => el.addEventListener("click", () => this._call({ type: "heizplan/clear_override", room_id: el.dataset.clear })));
 
     // Wochenplan
     $(".blk.click").forEach((el) => el.addEventListener("click", (ev) => {
       if (this._justDragged) return;
       ev.stopPropagation();
-      this._popup = { day: el.dataset.day, idx: Number(el.dataset.idx) };
+      this._popup = { room: el.dataset.room, day: el.dataset.day, idx: Number(el.dataset.idx) };
       this._render();
     }));
     $(".handle").forEach((el) => el.addEventListener("pointerdown", (ev) => this._startDrag(ev, el)));
-    $("[data-copy]").forEach((el) => el.addEventListener("click", () => { this._copy = { day: el.dataset.copy }; this._render(); }));
+    $("[data-copy]").forEach((el) => el.addEventListener("click", () => { this._copy = { day: el.dataset.copy, room: el.dataset.copyRoom }; this._render(); }));
     $("[data-save-tpl]").forEach((el) => el.addEventListener("click", () => {
       const room = this._data.rooms[el.dataset.saveTpl];
       const name = prompt("Name der Vorlage:", `${room.name}`);
-      if (name) this._call({ type: "heizplan/save_template", name, plan: room.plan });
+      if (name) this._call({ type: "heizplan/save_template", name, plan: room.plan, kind: room.kind || "climate" });
     }));
     $("[data-apply-sel]").forEach((el) => el.addEventListener("change", () => {
       const room = this._currentRoom();
@@ -397,16 +469,21 @@ class HeizplanCard extends HTMLElement {
       if (ev.target !== el) return;
       this._popup = null; this._copy = null; this._render();
     }));
+    const keepInputs = () => {
+      this._popup.startVal = this.shadowRoot.querySelector('[data-f="start"]')?.value;
+      this._popup.splitVal = this.shadowRoot.querySelector('[data-f="split"]')?.value;
+    };
     $("[data-t]").forEach((el) => el.addEventListener("click", () => {
-      const room = this._currentRoom();
+      const room = this._roomById(this._popup.room);
       const b = dayBlocks(room.plan[this._popup.day])[this._popup.idx];
-      const startVal = this.shadowRoot.querySelector('[data-f="start"]')?.value;
-      const splitVal = this.shadowRoot.querySelector('[data-f="split"]')?.value;
-      this._popup.temp = clamp((this._popup.temp ?? b.temp) + Number(el.dataset.t), 5, 30);
-      this._popup.startVal = startVal; this._popup.splitVal = splitVal;
+      keepInputs();
+      this._popup.value = clamp((this._popup.value ?? b.value) + Number(el.dataset.t), 5, 30);
       this._render();
-      if (startVal) this.shadowRoot.querySelector('[data-f="start"]').value = startVal;
-      if (splitVal) this.shadowRoot.querySelector('[data-f="split"]').value = splitVal;
+    }));
+    $("[data-set-on]").forEach((el) => el.addEventListener("click", () => {
+      keepInputs();
+      this._popup.value = el.dataset.setOn === "1";
+      this._render();
     }));
     $("[data-save-block]").forEach((el) => el.addEventListener("click", () => this._saveBlock()));
     $("[data-del-block]").forEach((el) => el.addEventListener("click", () => this._deleteBlock()));
@@ -415,22 +492,26 @@ class HeizplanCard extends HTMLElement {
       this.shadowRoot.querySelectorAll("[data-copy-day]").forEach((c) => { c.checked = pick.includes(c.value); });
     }));
     $("[data-do-copy]").forEach((el) => el.addEventListener("click", () => {
-      const room = this._currentRoom();
+      const room = this._roomById(this._copy.room);
       const day = this._copy.day;
       const to = [...this.shadowRoot.querySelectorAll("[data-copy-day]:checked")].map((c) => c.value);
       this._copy = null;
-      if (!to.length) { this._render(); return; }
+      if (!to.length || !room) { this._render(); return; }
       this._call({ type: "heizplan/set_day", room_id: room.id, day, blocks: room.plan[day], copy_to: to });
     }));
   }
 
+  _setValue(block, value, sw) {
+    if (sw) { block.on = Boolean(value); delete block.temp; } else { block.temp = value; delete block.on; }
+  }
+
   _saveBlock() {
-    const room = this._currentRoom();
+    const room = this._roomById(this._popup.room);
+    const sw = isSwitch(room);
     const { day, idx } = this._popup;
     const blocks = room.plan[day].map((b) => ({ ...b }));
     const block = blocks[idx];
-    const temp = this._popup.temp ?? Number(block.temp);
-    block.temp = temp;
+    this._setValue(block, this._popup.value ?? blockValue(block), sw);
     const startEl = this.shadowRoot.querySelector('[data-f="start"]');
     if (startEl && startEl.value && idx > 0) {
       const prev = toMin(blocks[idx - 1].start);
@@ -442,9 +523,11 @@ class HeizplanCard extends HTMLElement {
     if (splitEl && splitEl.value) {
       const m = Math.round(toMin(splitEl.value) / SNAP) * SNAP;
       if (m > 0 && m < 1440 && !blocks.some((b) => toMin(b.start) === m)) {
-        // neuer Block übernimmt zunächst die Temperatur des Blocks, in dem er liegt (+1 °C als Startwert)
         const host = dayBlocks(blocks).find((b) => b.start < m && m < b.end) || dayBlocks(blocks)[0];
-        blocks.push({ start: fmtMin(m), temp: clamp(host.temp + 1, 5, 30) });
+        const nb = { start: fmtMin(m) };
+        // neuer Block: Gegenteil (An/Aus) bzw. +1 °C als Startwert
+        this._setValue(nb, sw ? !host.value : clamp(host.value + 1, 5, 30), sw);
+        blocks.push(nb);
         blocks.sort((a, b) => toMin(a.start) - toMin(b.start));
       }
     }
@@ -453,7 +536,7 @@ class HeizplanCard extends HTMLElement {
   }
 
   _deleteBlock() {
-    const room = this._currentRoom();
+    const room = this._roomById(this._popup.room);
     const { day, idx } = this._popup;
     const blocks = room.plan[day].filter((_, i) => i !== idx);
     this._popup = null;
@@ -463,7 +546,7 @@ class HeizplanCard extends HTMLElement {
   _startDrag(ev, handle) {
     ev.preventDefault();
     const bar = handle.parentElement;
-    const room = this._currentRoom();
+    const room = this._roomById(handle.dataset.room);
     const day = handle.dataset.day;
     const idx = Number(handle.dataset.idx);
     const blocks = room.plan[day].map((b) => ({ ...b }));
@@ -562,6 +645,8 @@ const STYLE = `
   .row { display:flex; align-items:center; gap:8px; }
   .row.today .day { color: var(--primary-color); font-weight:700; }
   .day { width:24px; font-size:.9em; }
+  .rname { width:110px; flex:none; text-align:left; font-size:.9em; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chips.days { margin-top:-4px; }
   .scale { display:flex; gap:8px; font-size:.75em; color:var(--secondary-text-color); }
   .scale > span:first-child { width:24px; } .scale > span:last-child { width:30px; }
   .ticks { position:relative; flex:1; height:14px; }
@@ -583,7 +668,7 @@ const STYLE = `
   .dact { display:flex; justify-content:space-between; align-items:center; margin-top:12px; }
   .days { display:flex; flex-wrap:wrap; gap:10px; }
   .quick { display:flex; gap:4px; margin-top:8px; }
-  @media (max-width: 500px) { .ticks span:nth-child(even) { display:none; } .temps { gap:12px; } }
+  @media (max-width: 500px) { .rname { width:80px; } .week.all .scale > span:first-child { width:80px !important; } .ticks span:nth-child(even) { display:none; } .temps { gap:12px; } }
 `;
 
 if (!customElements.get("heizplan-card")) {

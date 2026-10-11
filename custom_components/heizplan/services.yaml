@@ -16,7 +16,6 @@ set_override:
       selector:
         text:
     temperature:
-      required: true
       selector:
         number:
           min: 5
@@ -30,6 +29,9 @@ set_override:
           min: 1
           max: 10080
           unit_of_measurement: min
+    "on":
+      selector:
+        boolean:
 clear_override:
   fields:
     room:
@@ -48,3 +50,24 @@ import_scheduler:
       default: true
       selector:
         boolean:
+update_room:
+  fields:
+    room:
+      required: true
+      selector:
+        text:
+    name:
+      selector:
+        text:
+    valve:
+      selector:
+        entity:
+          domain: sensor
+    follow_season:
+      selector:
+        boolean:
+    months:
+      selector:
+        select:
+          multiple: true
+          options: ["1","2","3","4","5","6","7","8","9","10","11","12"]

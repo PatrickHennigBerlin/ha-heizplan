@@ -89,14 +89,18 @@ async def ws_set_plan(hass, manager, msg):
     {
         vol.Required("type"): "heizplan/set_override",
         vol.Required("room_id"): str,
-        vol.Required("temp"): vol.Coerce(float),
+        vol.Exclusive("temp", "value"): vol.Coerce(float),
+        vol.Exclusive("on", "value"): bool,
         vol.Required("minutes"): vol.Coerce(int),
     }
 )
 @websocket_api.async_response
 @_wrap
 async def ws_set_override(hass, manager, msg):
-    await manager.async_set_override(msg["room_id"], msg["temp"], msg["minutes"])
+    value = msg["on"] if "on" in msg else msg.get("temp")
+    if value is None:
+        raise ValueError("temp oder on fehlt")
+    await manager.async_set_override(msg["room_id"], value, msg["minutes"])
 
 
 @websocket_api.websocket_command(
@@ -132,12 +136,13 @@ async def ws_set_away_temp(hass, manager, msg):
         vol.Optional("template_id"): vol.Any(str, None),
         vol.Required("name"): str,
         vol.Required("plan"): dict,
+        vol.Optional("kind", default="climate"): vol.In(["climate", "switch"]),
     }
 )
 @websocket_api.async_response
 @_wrap
 async def ws_save_template(hass, manager, msg):
-    tid = await manager.async_save_template(msg.get("template_id"), msg["name"], msg["plan"])
+    tid = await manager.async_save_template(msg.get("template_id"), msg["name"], msg["plan"], msg["kind"])
     return {"template_id": tid}
 
 
@@ -185,13 +190,17 @@ async def ws_add_room(hass, manager, msg):
         vol.Required("room_id"): str,
         vol.Optional("name"): vol.Any(str, None),
         vol.Optional("valve"): vol.Any(str, None),
+        vol.Optional("follow_season"): vol.Any(bool, None),
+        vol.Optional("months"): vol.Any([vol.Coerce(int)], None),
     }
 )
 @websocket_api.require_admin
 @websocket_api.async_response
 @_wrap
 async def ws_update_room(hass, manager, msg):
-    await manager.async_update_room(msg["room_id"], msg.get("name"), msg.get("valve"))
+    await manager.async_update_room(
+        msg["room_id"], msg.get("name"), msg.get("valve"), msg.get("follow_season"), msg.get("months")
+    )
 
 
 @websocket_api.websocket_command(

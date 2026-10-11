@@ -29,7 +29,7 @@ LOUNGE_WERKTAGS = {
 def test_normalize_sorts_merges_and_adds_midnight():
     day = normalize_day(
         [{"start": "17:30", "temp": 23}, {"start": "08:00", "temp": 18}, {"start": "09:00", "temp": 18}],
-        fallback_temp=16,
+        16,
     )
     assert day == [
         {"start": "00:00", "temp": 16.0},
@@ -69,3 +69,25 @@ def test_next_change_crosses_midnight():
 def test_next_change_none_for_constant_plan():
     plan = normalize_plan({}, 20)
     assert next_change(plan, datetime(2026, 10, 12, 12, 0)) is None
+
+
+FBH = {
+    "weekdays": ["daily"],
+    "timeslots": ["00:00:00 - 06:00:00", "06:00:00 - 09:00:00", "09:00:00 - 19:00:00",
+                  "19:00:00 - 21:00:00", "21:00:00 - 00:00:00"],
+    "entities": ["switch.fussbodenheizung"],
+    "actions": [{"service": "switch.turn_off"}, {"service": "switch.turn_on"}, {"service": "switch.turn_off"},
+                {"service": "switch.turn_on"}, {"service": "switch.turn_off"}],
+}
+
+
+def test_switch_plan_from_scheduler():
+    days, entities, blocks = blocks_from_scheduler(FBH)
+    assert entities == ["switch.fussbodenheizung"] and len(days) == 7
+    plan = normalize_plan({d: blocks for d in days}, False, kind="switch")
+    assert plan["mon"] == [
+        {"start": "00:00", "on": False}, {"start": "06:00", "on": True}, {"start": "09:00", "on": False},
+        {"start": "19:00", "on": True}, {"start": "21:00", "on": False},
+    ]
+    assert temp_at(plan, datetime(2026, 10, 12, 7, 0)) is True
+    assert next_change(plan, datetime(2026, 10, 12, 7, 0)) == (datetime(2026, 10, 12, 9, 0), False)

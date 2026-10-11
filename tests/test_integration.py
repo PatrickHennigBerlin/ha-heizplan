@@ -154,3 +154,63 @@ async def test_import_write_override_away(hass: HomeAssistant, hass_ws_client):
         assert set_temp[-1].data["temperature"] == 21.5
 
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+FBH_ATTRS = {
+    "weekdays": ["daily"],
+    "timeslots": ["00:00:00 - 06:00:00", "06:00:00 - 09:00:00", "09:00:00 - 00:00:00"],
+    "entities": ["switch.fussbodenheizung"],
+    "actions": [{"service": "switch.turn_off"}, {"service": "switch.turn_on"}, {"service": "switch.turn_off"}],
+}
+
+
+async def test_floor_heating_switch_room(hass: HomeAssistant, hass_ws_client):
+    fixed = dt_util.as_local(datetime(2026, 10, 12, 7, 0)).replace(tzinfo=dt_util.get_default_time_zone())
+    with patch("custom_components.heizplan.manager.dt_util.now", return_value=fixed):
+        entry, set_temp, set_preset = await _setup(hass)
+        hass.states.async_set("switch.fussbodenheizung", "off", {"friendly_name": "Fussbodenheizung"})
+        hass.states.async_set("switch.schedule_fbh", "on", FBH_ATTRS)
+        turn_on = async_mock_service(hass, "switch", "turn_on")
+        turn_off = async_mock_service(hass, "switch", "turn_off")
+
+        await hass.services.async_call(DOMAIN, "import_scheduler",
+                                       {"entities": ["switch.schedule_fbh", "switch.schedule_test"]},
+                                       blocking=True, return_response=True)
+        await hass.async_block_till_done()
+        await hass.async_block_till_done()
+        # 07:00 -> An
+        assert turn_on and turn_on[-1].data["entity_id"] == "switch.fussbodenheizung"
+
+        # unabhängig von der Heizperiode, nur Okt–Apr
+        await hass.services.async_call(DOMAIN, "update_room",
+                                       {"room": "switch.fussbodenheizung", "follow_season": False,
+                                        "months": [10, 11, 12, 1, 2, 3, 4]}, blocking=True)
+        await hass.async_block_till_done()
+        sensor = hass.states.get("sensor.heizplan_fussbodenheizung_soll")
+        assert sensor is not None and sensor.state == "Ein"
+
+        client = await hass_ws_client(hass)
+        await client.send_json({"id": 1, "type": "heizplan/set_override", "room_id": "fussbodenheizung",
+                                "on": False, "minutes": 60})
+        msg = await client.receive_json()
+        assert msg["success"], msg
+        room = msg["result"]["rooms"]["fussbodenheizung"]
+        assert room["kind"] == "switch" and room["status"]["target"] is False
+        assert turn_off and turn_off[-1].data["entity_id"] == "switch.fussbodenheizung"
+
+        # Heizperiode aus -> Heizkörper inaktiv, Fußbodenheizung (follow_season False) weiter aktiv
+        hass.states.async_set("switch.heizperiode", "off")
+        await hass.async_block_till_done()
+        await client.send_json({"id": 2, "type": "heizplan/get"})
+        msg = await client.receive_json()
+        assert msg["result"]["rooms"]["lounge"]["status"]["source"] == "inactive"
+        assert msg["result"]["rooms"]["fussbodenheizung"]["status"]["source"] == "override"
+
+        # Tag bearbeiten mit An/Aus-Blöcken
+        await client.send_json({"id": 3, "type": "heizplan/set_day", "room_id": "fussbodenheizung", "day": "mon",
+                                "blocks": [{"start": "00:00", "on": False}, {"start": "05:30", "on": True}]})
+        msg = await client.receive_json()
+        assert msg["success"], msg
+        assert msg["result"]["rooms"]["fussbodenheizung"]["plan"]["mon"][1] == {"start": "05:30", "on": True}
+
+    assert await hass.config_entries.async_unload(entry.entry_id)

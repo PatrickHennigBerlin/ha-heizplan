@@ -40,6 +40,8 @@ from .const import (
 )
 from .plan import (
     DAYS,
+    KIND_CLIMATE,
+    KIND_SWITCH,
     PlanError,
     block_at,
     blocks_from_scheduler,
@@ -54,6 +56,18 @@ _LOGGER = logging.getLogger(__name__)
 
 def room_id_from_entity(entity_id: str) -> str:
     return re.sub(r"[^a-z0-9_]", "_", entity_id.split(".", 1)[-1].lower())
+
+
+def kind_for_entity(entity_id: str) -> str:
+    return KIND_CLIMATE if entity_id.startswith("climate.") else KIND_SWITCH
+
+
+def room_kind(room: dict[str, Any]) -> str:
+    return room.get("kind") or kind_for_entity(room["climate"])
+
+
+def fallback_for(kind: str) -> Any:
+    return False if kind == KIND_SWITCH else DEFAULT_TEMP
 
 
 class HeizplanManager:
@@ -85,6 +99,15 @@ class HeizplanManager:
     @property
     def comfort_preset(self) -> str:
         return self.entry.options.get(CONF_COMFORT_PRESET) or DEFAULT_COMFORT_PRESET
+
+    def room_active(self, room: dict[str, Any], now: datetime) -> bool:
+        """Raum aktiv? Folgt der Heizperiode (Standard) und/oder festen Monaten."""
+        months = room.get("months")
+        if months and now.month not in months:
+            return False
+        if room.get("follow_season", True) and not self.season_active():
+            return False
+        return True
 
     def season_active(self) -> bool:
         ent = self.season_entity
@@ -163,11 +186,14 @@ class HeizplanManager:
         now = now or dt_util.now()
         room = self.rooms[room_id]
         plan = room["plan"]
+        kind = room_kind(room)
         plan_temp, block_start, block_end = block_at(plan, now)
         nxt = next_change(plan, now)
         climate = self.hass.states.get(room["climate"])
         status: dict[str, Any] = {
             "room_id": room_id,
+            "kind": kind,
+            "is_on": (climate.state == "on") if (climate and kind == KIND_SWITCH) else None,
             "name": room.get("name", room_id),
             "climate": room["climate"],
             "plan_temp": plan_temp,
@@ -189,15 +215,16 @@ class HeizplanManager:
                 except ValueError:
                     status["valve"] = None
         ovr = self._override_active(room_id, now)
-        if not self.season_active() or self.mode == MODE_OFF:
+        if not self.room_active(room, now) or self.mode == MODE_OFF:
             status["target"] = None
             status["source"] = SOURCE_INACTIVE
         elif ovr:
-            status["target"] = float(ovr["temp"])
+            value = bool(ovr["on"]) if kind == KIND_SWITCH else float(ovr["temp"])
+            status["target"] = value
             status["source"] = SOURCE_OVERRIDE
-            status["override"] = {"temp": float(ovr["temp"]), "until": ovr["until"]}
+            status["override"] = {**ovr}
         elif self.mode == MODE_AWAY:
-            status["target"] = self.away_temp
+            status["target"] = False if kind == KIND_SWITCH else self.away_temp
             status["source"] = SOURCE_AWAY
         else:
             status["target"] = plan_temp
@@ -213,7 +240,7 @@ class HeizplanManager:
             "season_entity": self.season_entity,
             "season_active": self.season_active(),
             "rooms": {
-                rid: {**room, "status": self.room_status(rid, now)}
+                rid: {**room, "kind": room_kind(room), "status": self.room_status(rid, now)}
                 for rid, room in self.rooms.items()
             },
             "templates": self.templates,
@@ -249,12 +276,23 @@ class HeizplanManager:
             self._schedule_save()
         async_dispatcher_send(self.hass, SIGNAL_UPDATED)
 
-    async def _write(self, room_id: str, target: float, restore_all: bool = False) -> bool:
+    async def _write(self, room_id: str, target: Any, restore_all: bool = False) -> bool:
         entity_id = self.rooms[room_id]["climate"]
         state = self.hass.states.get(entity_id)
         if state is None or state.state == "unavailable":
             _LOGGER.warning("Heizplan: %s nicht verfügbar", entity_id)
             return False
+        if room_kind(self.rooms[room_id]) == KIND_SWITCH:
+            domain = entity_id.split(".", 1)[0]
+            try:
+                await self.hass.services.async_call(
+                    domain, "turn_on" if target else "turn_off",
+                    {ATTR_ENTITY_ID: entity_id}, blocking=True,
+                )
+                return True
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.error("Heizplan: Schalten von %s fehlgeschlagen: %s", entity_id, err)
+                return False
         try:
             if self.keep_comfort:
                 presets = state.attributes.get("preset_modes") or []
@@ -310,22 +348,29 @@ class HeizplanManager:
         if room_id in self.rooms:
             raise PlanError(f"Raum {room_id} existiert schon")
         state = self.hass.states.get(climate)
+        kind = kind_for_entity(climate)
         self.rooms[room_id] = {
             "name": name or (state.name if state else room_id),
             "climate": climate,
+            "kind": kind,
             "valve": valve,
-            "plan": default_plan(DEFAULT_TEMP),
+            "plan": default_plan(fallback_for(kind), kind),
         }
         await self._changed(rooms_changed=True)
         return room_id
 
     async def async_update_room(self, room_id: str, name: str | None = None,
-                                valve: str | None = None) -> None:
+                                valve: str | None = None, follow_season: bool | None = None,
+                                months: list[int] | None = None) -> None:
         room = self.rooms[room_id]
         if name is not None:
             room["name"] = name
         if valve is not None:
             room["valve"] = valve or None
+        if follow_season is not None:
+            room["follow_season"] = bool(follow_season)
+        if months is not None:
+            room["months"] = [int(m) for m in months if 1 <= int(m) <= 12] or None
         await self._changed()
 
     async def async_remove_room(self, room_id: str) -> None:
@@ -335,24 +380,29 @@ class HeizplanManager:
         await self._changed(rooms_changed=True)
 
     async def async_set_plan(self, room_id: str, plan: dict[str, Any]) -> None:
-        self.rooms[room_id]["plan"] = normalize_plan(plan, DEFAULT_TEMP)
+        kind = room_kind(self.rooms[room_id])
+        self.rooms[room_id]["plan"] = normalize_plan(plan, fallback_for(kind), kind)
         await self._changed()
 
     async def async_set_day(self, room_id: str, day: str, blocks: list, copy_to: list[str] | None = None) -> None:
         if day not in DAYS:
             raise PlanError(f"Unbekannter Tag {day}")
-        norm = normalize_day(blocks, DEFAULT_TEMP)
+        kind = room_kind(self.rooms[room_id])
+        norm = normalize_day(blocks, fallback_for(kind), kind)
         plan = self.rooms[room_id]["plan"]
         for target in [day, *(copy_to or [])]:
             if target in DAYS:
                 plan[target] = [dict(b) for b in norm]
         await self._changed()
 
-    async def async_set_override(self, room_id: str, temp: float, minutes: int) -> None:
+    async def async_set_override(self, room_id: str, value: Any, minutes: int) -> None:
         if room_id not in self.rooms:
             raise PlanError(f"Unbekannter Raum {room_id}")
         until = dt_util.now() + timedelta(minutes=int(minutes))
-        self.overrides[room_id] = {"temp": round(float(temp) * 2) / 2, "until": until.isoformat()}
+        if room_kind(self.rooms[room_id]) == KIND_SWITCH:
+            self.overrides[room_id] = {"on": bool(value), "until": until.isoformat()}
+        else:
+            self.overrides[room_id] = {"temp": round(float(value) * 2) / 2, "until": until.isoformat()}
         await self._changed()
 
     async def async_clear_override(self, room_id: str) -> None:
@@ -370,12 +420,14 @@ class HeizplanManager:
         self.away_temp = round(float(temp) * 2) / 2
         await self._changed()
 
-    async def async_save_template(self, template_id: str | None, name: str, plan: dict[str, Any]) -> str:
+    async def async_save_template(self, template_id: str | None, name: str, plan: dict[str, Any],
+                                  kind: str = KIND_CLIMATE) -> str:
         tid = template_id or re.sub(r"[^a-z0-9_]", "_", name.lower()) or "vorlage"
         base, n = tid, 2
         while template_id is None and tid in self.templates:
             tid, n = f"{base}_{n}", n + 1
-        self.templates[tid] = {"name": name, "plan": normalize_plan(plan, DEFAULT_TEMP)}
+        self.templates[tid] = {"name": name, "kind": kind,
+                               "plan": normalize_plan(plan, fallback_for(kind), kind)}
         self._schedule_save()
         async_dispatcher_send(self.hass, SIGNAL_UPDATED)
         return tid
@@ -386,10 +438,11 @@ class HeizplanManager:
         async_dispatcher_send(self.hass, SIGNAL_UPDATED)
 
     async def async_apply_template(self, template_id: str, room_ids: list[str]) -> None:
-        plan = self.templates[template_id]["plan"]
+        tpl = self.templates[template_id]
+        tkind = tpl.get("kind", KIND_CLIMATE)
         for room_id in room_ids:
-            if room_id in self.rooms:
-                self.rooms[room_id]["plan"] = normalize_plan(plan, DEFAULT_TEMP)
+            if room_id in self.rooms and room_kind(self.rooms[room_id]) == tkind:
+                self.rooms[room_id]["plan"] = normalize_plan(tpl["plan"], fallback_for(tkind), tkind)
         await self._changed()
 
     async def async_import_scheduler(self, schedule_entities: list[str], create_rooms: bool = True) -> dict[str, Any]:
@@ -403,10 +456,14 @@ class HeizplanManager:
                 continue
             days, targets, blocks = blocks_from_scheduler(dict(state.attributes))
             if not blocks or not days:
-                result["skipped"].append({"entity": ent, "reason": "keine Temperatur-Blöcke"})
+                result["skipped"].append({"entity": ent, "reason": "keine Temperatur-/Schalt-Blöcke"})
                 continue
             for climate in targets:
-                if not climate.startswith("climate."):
+                if climate.split(".", 1)[0] not in ("climate", "switch", "input_boolean"):
+                    continue
+                expected = kind_for_entity(climate)
+                if any(("on" in b) != (expected == KIND_SWITCH) for b in blocks):
+                    result["skipped"].append({"entity": ent, "reason": f"Aktionen passen nicht zu {climate}"})
                     continue
                 plan = per_climate.setdefault(climate, {})
                 for day in days:
@@ -419,15 +476,18 @@ class HeizplanManager:
                 if not create_rooms:
                     continue
                 state = self.hass.states.get(climate)
+                kind = kind_for_entity(climate)
                 self.rooms[room_id] = {
                     "name": state.name if state else room_id,
                     "climate": climate,
+                    "kind": kind,
                     "valve": None,
-                    "plan": default_plan(DEFAULT_TEMP),
+                    "plan": default_plan(fallback_for(kind), kind),
                 }
                 rooms_changed = True
+            kind = room_kind(self.rooms[room_id])
             plan = self.rooms[room_id]["plan"]
             for day, blocks in partial.items():
-                plan[day] = normalize_day(blocks, DEFAULT_TEMP)
+                plan[day] = normalize_day(blocks, fallback_for(kind), kind)
         await self._changed(rooms_changed=rooms_changed)
         return result

@@ -12,7 +12,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .entity import HeizplanEntity
-from .manager import HeizplanManager
+from .manager import HeizplanManager, room_kind
+from .plan import KIND_SWITCH
 
 SOURCE_TEXT = {
     "plan": "Wochenplan",
@@ -26,7 +27,11 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     manager: HeizplanManager = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(HeizplanRoomSensor(manager, rid) for rid in manager.rooms)
+    async_add_entities(
+        (HeizplanSwitchRoomSensor(manager, rid) if room_kind(room) == KIND_SWITCH
+         else HeizplanRoomSensor(manager, rid))
+        for rid, room in manager.rooms.items()
+    )
 
 
 class HeizplanRoomSensor(HeizplanEntity, SensorEntity):
@@ -68,3 +73,22 @@ class HeizplanRoomSensor(HeizplanEntity, SensorEntity):
             "ventil": status["valve"],
             "manuell_bis": status["override"]["until"] if status["override"] else None,
         }
+
+
+class HeizplanSwitchRoomSensor(HeizplanRoomSensor):
+    """Raum mit Ein/Aus (z. B. Fußbodenheizung): Zustand 'Ein' / 'Aus'."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_state_class = None
+    _attr_native_unit_of_measurement = None
+    _attr_options = ["Ein", "Aus"]
+    _attr_icon = "mdi:heating-coil"
+
+    @property
+    def native_value(self) -> str | None:
+        if self.room_id not in self.manager.rooms:
+            return None
+        target = self.manager.room_status(self.room_id)["target"]
+        if target is None:
+            return None
+        return "Ein" if target else "Aus"
