@@ -1,0 +1,85 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Heizplan einrichten",
+        "description": "Wochenpläne für die Heizungen. Die Regler bleiben auf Komfort, Heizplan schreibt die echte Solltemperatur.",
+        "data": {
+          "season_entity": "Heizperiode (aus = Heizplan schreibt nichts)",
+          "keep_comfort": "Regler auf Komfort halten",
+          "comfort_preset": "Name der Komfort-Betriebsart"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Heizplan ist schon eingerichtet.",
+      "single_instance_allowed": "Heizplan ist schon eingerichtet."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Heizplan Optionen",
+        "data": {
+          "season_entity": "Heizperiode (aus = Heizplan schreibt nichts)",
+          "keep_comfort": "Regler auf Komfort halten",
+          "comfort_preset": "Name der Komfort-Betriebsart"
+        }
+      }
+    }
+  },
+  "services": {
+    "set_mode": {
+      "name": "Modus setzen",
+      "description": "Wochenplan, Abwesend oder Aus.",
+      "fields": {
+        "mode": {
+          "name": "Modus",
+          "description": "plan, away oder off"
+        }
+      }
+    },
+    "set_override": {
+      "name": "Raum kurzzeitig überschreiben",
+      "description": "Setzt für einen Raum eine Temperatur für eine Dauer, danach gilt wieder der Plan.",
+      "fields": {
+        "room": {
+          "name": "Raum",
+          "description": "Raum-ID, Raumname oder climate-Entity"
+        },
+        "temperature": {
+          "name": "Temperatur",
+          "description": "Solltemperatur"
+        },
+        "minutes": {
+          "name": "Minuten",
+          "description": "Dauer"
+        }
+      }
+    },
+    "clear_override": {
+      "name": "Überschreiben beenden",
+      "description": "Raum zurück auf den Plan.",
+      "fields": {
+        "room": {
+          "name": "Raum",
+          "description": "Raum-ID, Raumname oder climate-Entity"
+        }
+      }
+    },
+    "import_scheduler": {
+      "name": "Aus Scheduler übernehmen",
+      "description": "Übernimmt switch.schedule_* (Scheduler-Component) als Raumpläne.",
+      "fields": {
+        "entities": {
+          "name": "Zeitpläne",
+          "description": "switch.schedule_* Entities"
+        },
+        "create_rooms": {
+          "name": "Räume anlegen",
+          "description": "Fehlende Räume automatisch anlegen"
+        }
+      }
+    }
+  }
+}

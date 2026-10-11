@@ -1,0 +1,50 @@
+set_mode:
+  fields:
+    mode:
+      required: true
+      selector:
+        select:
+          options:
+            - plan
+            - away
+            - "off"
+set_override:
+  fields:
+    room:
+      required: true
+      example: climate.lounge
+      selector:
+        text:
+    temperature:
+      required: true
+      selector:
+        number:
+          min: 5
+          max: 30
+          step: 0.5
+          unit_of_measurement: "°C"
+    minutes:
+      default: 120
+      selector:
+        number:
+          min: 1
+          max: 10080
+          unit_of_measurement: min
+clear_override:
+  fields:
+    room:
+      required: true
+      selector:
+        text:
+import_scheduler:
+  fields:
+    entities:
+      required: true
+      selector:
+        entity:
+          domain: switch
+          multiple: true
+    create_rooms:
+      default: true
+      selector:
+        boolean:

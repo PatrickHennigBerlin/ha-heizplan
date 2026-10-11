@@ -1,0 +1,14 @@
+{
+  "domain": "heizplan",
+  "name": "Heizplan",
+  "codeowners": ["@PatrickHennigBerlin"],
+  "config_flow": true,
+  "dependencies": ["http", "frontend", "websocket_api"],
+  "documentation": "https://github.com/PatrickHennigBerlin/ha-heizplan",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/PatrickHennigBerlin/ha-heizplan/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}
