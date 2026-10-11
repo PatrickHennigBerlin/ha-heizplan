@@ -18,6 +18,7 @@ import homeassistant.helpers.config_validation as cv
 from .const import CARD_URL, DOMAIN, MODES, VERSION
 from .manager import HeizplanManager, room_id_from_entity
 from .plan import PlanError
+from .season import BASES, SEASON_MODES
 from .websocket import async_register_websocket
 
 _LOGGER = logging.getLogger(__name__)
@@ -158,4 +159,29 @@ def _register_services(hass: HomeAssistant) -> None:
             }
         ),
         supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    async def set_season_auto(call: ServiceCall) -> None:
+        cfg = {k: v for k, v in call.data.items()}
+        try:
+            await get_manager(hass).async_set_season_auto(cfg)
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+
+    hass.services.async_register(
+        DOMAIN,
+        "set_season_auto",
+        set_season_auto,
+        schema=vol.Schema(
+            {
+                vol.Optional("mode"): vol.In(SEASON_MODES),
+                vol.Optional("on_date"): cv.string,
+                vol.Optional("off_date"): cv.string,
+                vol.Optional("weather_entity"): cv.entity_id,
+                vol.Optional("on_below"): vol.Coerce(float),
+                vol.Optional("off_above"): vol.Coerce(float),
+                vol.Optional("days"): vol.All(vol.Coerce(int), vol.Range(1, 10)),
+                vol.Optional("basis"): vol.In(BASES),
+            }
+        ),
     )

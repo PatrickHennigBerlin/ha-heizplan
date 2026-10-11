@@ -213,6 +213,34 @@ async def ws_remove_room(hass, manager, msg):
     await manager.async_remove_room(msg["room_id"])
 
 
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "heizplan/set_season_auto",
+        vol.Optional("mode"): str,
+        vol.Optional("on_date"): str,
+        vol.Optional("off_date"): str,
+        vol.Optional("weather_entity"): vol.Any(str, None),
+        vol.Optional("on_below"): vol.Coerce(float),
+        vol.Optional("off_above"): vol.Coerce(float),
+        vol.Optional("days"): vol.Coerce(int),
+        vol.Optional("basis"): str,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+@_wrap
+async def ws_set_season_auto(hass, manager, msg):
+    cfg = {k: v for k, v in msg.items() if k not in ("type", "id")}
+    await manager.async_set_season_auto(cfg)
+
+
+@websocket_api.websocket_command({vol.Required("type"): "heizplan/season_check"})
+@websocket_api.async_response
+@_wrap
+async def ws_season_check(hass, manager, msg):
+    await manager.async_season_check()
+
+
 @callback
 def async_register_websocket(hass: HomeAssistant) -> None:
     for handler in (
@@ -230,5 +258,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
         ws_add_room,
         ws_update_room,
         ws_remove_room,
+        ws_set_season_auto,
+        ws_season_check,
     ):
         websocket_api.async_register_command(hass, handler)

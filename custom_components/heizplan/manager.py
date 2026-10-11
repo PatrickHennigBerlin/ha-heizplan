@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_ENTITY_ID, STATE_ON
+from homeassistant.const import ATTR_ENTITY_ID, EVENT_HOMEASSISTANT_STARTED, STATE_ON
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
@@ -37,6 +37,15 @@ from .const import (
     SOURCE_PLAN,
     STORAGE_KEY,
     STORAGE_VERSION,
+)
+from .season import (
+    DEFAULT_SEASON_AUTO,
+    SEASON_DATES,
+    SEASON_WEATHER,
+    date_decision,
+    daily_values,
+    normalize_season_auto,
+    weather_decision,
 )
 from .plan import (
     DAYS,
@@ -86,6 +95,11 @@ class HeizplanManager:
         # Räume, deren Regler einmalig (auch aus Frostschutz) auf Komfort gestellt werden sollen
         self._restore_pending: set[str] = set()
         self._unsubs: list[CALLBACK_TYPE] = []
+        # Heizperiode-Automatik (manuell / Datum / Wetter)
+        self.season_auto: dict[str, Any] = dict(DEFAULT_SEASON_AUTO)
+        self.season_last: dict[str, Any] = {}   # {"decision": bool|None, "date": "YYYY-MM-DD"}
+        self.season_status: dict[str, Any] = {}
+        self._started_unsub: CALLBACK_TYPE | None = None
 
     # ------------------------------------------------------------------ Optionen
     @property
@@ -126,6 +140,12 @@ class HeizplanManager:
         if self.mode not in MODES:
             self.mode = MODE_PLAN
         self.away_temp = float(data.get("away_temp", DEFAULT_AWAY_TEMP))
+        try:
+            self.season_auto = normalize_season_auto(data.get("season_auto"))
+        except ValueError as err:
+            _LOGGER.warning("Heizplan: Heizperiode-Automatik zurückgesetzt (%s)", err)
+            self.season_auto = dict(DEFAULT_SEASON_AUTO)
+        self.season_last = data.get("season_last") or {}
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -134,6 +154,8 @@ class HeizplanManager:
             "overrides": self.overrides,
             "mode": self.mode,
             "away_temp": self.away_temp,
+            "season_auto": self.season_auto,
+            "season_last": self.season_last,
         }
 
     @callback
@@ -151,9 +173,18 @@ class HeizplanManager:
                     self.hass, [self.season_entity], self._season_changed
                 )
             )
+        # Heizperiode-Automatik: kurz nach Mitternacht (Datum) sowie morgens und abends (Wetter)
+        self._unsubs.append(
+            async_track_time_change(self.hass, self._season_tick, hour=[0, 6, 18], minute=[5], second=[30])
+        )
         if not self.hass.is_running:
             # HA-Start (z. B. nach Stromausfall): Regler einmalig auf Komfort, auch aus Frostschutz
             self._restore_pending = set(self.rooms)
+            self._started_unsub = self.hass.bus.async_listen_once(
+                EVENT_HOMEASSISTANT_STARTED, self._season_started
+            )
+        else:
+            self.hass.async_create_task(self.async_season_check())
         await self.async_apply(force=True)
 
     @callback
@@ -161,9 +192,100 @@ class HeizplanManager:
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
+        if self._started_unsub is not None:
+            self._started_unsub()
+            self._started_unsub = None
 
     async def _tick(self, now: datetime) -> None:
         await self.async_apply()
+
+    async def _season_tick(self, now: datetime) -> None:
+        await self.async_season_check()
+
+    async def _season_started(self, event: Event) -> None:
+        self._started_unsub = None  # Listener ist nach dem Auslösen bereits entfernt
+        await self.async_season_check()
+
+    # ------------------------------------------------------------------ Heizperiode-Automatik
+    async def async_set_season_auto(self, cfg: dict[str, Any]) -> None:
+        self.season_auto = normalize_season_auto({**self.season_auto, **cfg})
+        # neue Einstellung: nächste Entscheidung darf wieder schalten
+        self.season_last = {}
+        self._schedule_save()
+        await self.async_season_check()
+
+    async def _fetch_forecast(self, entity_id: str) -> list[dict[str, Any]] | None:
+        try:
+            resp = await self.hass.services.async_call(
+                "weather", "get_forecasts", {"entity_id": entity_id, "type": "daily"},
+                blocking=True, return_response=True,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Heizplan: Wettervorhersage von %s nicht abrufbar: %s", entity_id, err)
+            return None
+        return ((resp or {}).get(entity_id) or {}).get("forecast")
+
+    async def _set_season(self, on: bool, reason: str) -> bool:
+        ent = self.season_entity
+        if not ent:
+            return False
+        state = self.hass.states.get(ent)
+        if state is None or state.state in ("unavailable", "unknown"):
+            _LOGGER.warning("Heizplan: %s nicht verfügbar – Heizperiode nicht geschaltet", ent)
+            return False
+        if (state.state == STATE_ON) == on:
+            return False
+        domain = ent.split(".", 1)[0]
+        if domain not in ("switch", "input_boolean"):
+            _LOGGER.warning("Heizplan: %s kann nicht geschaltet werden (nur switch/input_boolean)", ent)
+            return False
+        await self.hass.services.async_call(
+            domain, "turn_on" if on else "turn_off", {ATTR_ENTITY_ID: ent}, blocking=True
+        )
+        _LOGGER.info("Heizplan: Heizperiode %s (%s)", "an" if on else "aus", reason)
+        return True
+
+    async def async_season_check(self) -> None:
+        cfg = self.season_auto
+        now = dt_util.now()
+        today = now.date()
+        status: dict[str, Any] = {"checked": now.isoformat(), "mode": cfg["mode"], "values": None,
+                                  "decision": None, "switched": False, "text": ""}
+        if cfg["mode"] == SEASON_DATES:
+            decision = date_decision(today, cfg["on_date"], cfg["off_date"])
+            status["decision"] = decision
+            if decision is None:
+                status["text"] = "Heute kein Schalttag"
+            elif self.season_last.get("date") == today.isoformat():
+                status["text"] = "Heute schon geschaltet"
+            else:
+                status["switched"] = await self._set_season(decision, "Datum")
+                self.season_last = {"decision": decision, "date": today.isoformat()}
+                status["text"] = f"Schalttag: Heizperiode {'an' if decision else 'aus'}"
+        elif cfg["mode"] == SEASON_WEATHER:
+            forecast = await self._fetch_forecast(cfg["weather_entity"])
+            if forecast is None:
+                status["text"] = "Vorhersage nicht verfügbar"
+            else:
+                values = daily_values(forecast, today, cfg["days"], cfg["basis"])
+                decision = weather_decision(values, cfg["days"], cfg["on_below"], cfg["off_above"])
+                status["values"] = values
+                status["decision"] = decision
+                if len(values) < cfg["days"]:
+                    status["text"] = f"Vorhersage reicht nur für {len(values)} von {cfg['days']} Tagen"
+                elif decision is None:
+                    status["text"] = "Keine Bedingung erfüllt – bleibt wie es ist"
+                elif decision == self.season_last.get("decision"):
+                    status["text"] = "Bedingung unverändert – keine Schaltung (Hand-Schaltung bleibt)"
+                else:
+                    status["switched"] = await self._set_season(decision, "Wettervorhersage")
+                    self.season_last = {"decision": decision, "date": today.isoformat()}
+                    status["text"] = f"Bedingung erfüllt: Heizperiode {'an' if decision else 'aus'}"
+        else:
+            status["text"] = "Manuell"
+        self.season_status = status
+        self._schedule_save()
+        async_dispatcher_send(self.hass, SIGNAL_UPDATED)
 
     async def _season_changed(self, event: Event) -> None:
         self._last_written.clear()
@@ -239,6 +361,8 @@ class HeizplanManager:
             "away_temp": self.away_temp,
             "season_entity": self.season_entity,
             "season_active": self.season_active(),
+            "season_auto": self.season_auto,
+            "season_status": self.season_status,
             "rooms": {
                 rid: {**room, "kind": room_kind(room), "status": self.room_status(rid, now)}
                 for rid, room in self.rooms.items()

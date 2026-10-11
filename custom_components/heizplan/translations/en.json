@@ -110,6 +110,44 @@
           "description": "z. B. 10,11,12,1,2,3,4"
         }
       }
+    },
+    "set_season_auto": {
+      "name": "Heating season automation",
+      "description": "Controls the heating season switch manually, by date or by weather forecast.",
+      "fields": {
+        "mode": {
+          "name": "Control",
+          "description": "manual, dates or weather"
+        },
+        "on_date": {
+          "name": "On from",
+          "description": "Date DD.MM when the season is switched on"
+        },
+        "off_date": {
+          "name": "Off from",
+          "description": "Date DD.MM when the season is switched off"
+        },
+        "weather_entity": {
+          "name": "Weather",
+          "description": "Weather entity with daily forecast"
+        },
+        "on_below": {
+          "name": "On below",
+          "description": "On when all days are below this value"
+        },
+        "off_above": {
+          "name": "Off above",
+          "description": "Off when all days are above this value"
+        },
+        "days": {
+          "name": "Days",
+          "description": "Number of forecast days (from today)"
+        },
+        "basis": {
+          "name": "Basis",
+          "description": "mean, max or min daily temperature"
+        }
+      }
     }
   }
 }

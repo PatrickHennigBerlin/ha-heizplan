@@ -20,6 +20,7 @@ Standby-/Nacht-Absenkungen im Regler.
 - **Heizperiode**: optional eine Entity (z. B. `switch.heizperiode`) – ist sie aus, schreibt Heizplan nichts
 - Je Raum ein Sensor `sensor.heizplan_<raum>_soll` mit Attributen (Quelle, Block, nächster Wechsel, Ist, Ventil)
 - **Schalt-Räume** (z. B. elektrische Fußbodenheizung über `switch.*`): Blöcke mit An/Aus statt Temperatur, eigene aktive Monate, optional unabhängig von der Heizperiode (`heizplan.update_room`)
+- **Heizperiode-Automatik** (Reiter „Heizperiode“ in der Karte): *Manuell*, *Nach Datum* (z. B. an 01.10., aus 01.05.) oder *Nach Wetter* (an, wenn an allen nächsten N Tagen das Tagesmittel unter X °C liegt; aus, wenn über Y °C – Standard 6 Tage, 10 °C / 15 °C). Geschaltet wird nur bei einem neuen Ergebnis, Hand-Schaltung wird nicht gleich überstimmt
 - Übernahme bestehender Zeitpläne aus dem *Scheduler-Component* (`heizplan.import_scheduler`) – Temperatur- und An/Aus-Zeitpläne
 
 ## Installation (HACS)
@@ -36,7 +37,7 @@ Standby-/Nacht-Absenkungen im Regler.
 ```yaml
 type: custom:heizplan-card
 title: Heizung            # optional
-view: overview            # overview | week | templates
+view: overview            # overview | week | templates | season
 room: lounge              # optional: Startraum im Wochenplan
 rooms: [lounge, kuechewindow, schlafzimmer]   # optional: Reihenfolge/Auswahl
 hide_tabs: false
@@ -50,6 +51,7 @@ hide_tabs: false
 | `heizplan.set_override` | Raum (Entity, Raum-ID oder Name), `temperature` bzw. `on`, Minuten |
 | `heizplan.clear_override` | Raum zurück auf den Plan |
 | `heizplan.update_room` | Name, Ventil-Sensor, `follow_season`, aktive `months` (z. B. Fußbodenheizung nur Okt–Apr) |
+| `heizplan.set_season_auto` | Heizperiode-Automatik: `mode` (`manual`/`dates`/`weather`), `on_date`/`off_date` (TT.MM), `weather_entity`, `on_below`, `off_above`, `days`, `basis` (`mean`/`max`/`min`) |
 | `heizplan.import_scheduler` | `switch.schedule_*` übernehmen (`climate.set_temperature` und `switch.turn_on/off`; `workday` = Mo–Fr) |
 
 Beispiel „Außer Haus“: `heizplan.set_mode` mit `mode: away`; bei Rückkehr `mode: plan`.

@@ -214,3 +214,73 @@ async def test_floor_heating_switch_room(hass: HomeAssistant, hass_ws_client):
         assert msg["result"]["rooms"]["fussbodenheizung"]["plan"]["mon"][1] == {"start": "05:30", "on": True}
 
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_season_auto_weather(hass: HomeAssistant, hass_ws_client):
+    """Wetter-Automatik: kalt -> an; Hand-Aus wird bei gleicher Lage nicht überstimmt; warm -> aus."""
+    from homeassistant.core import SupportsResponse
+
+    fixed = dt_util.as_local(datetime(2026, 10, 12, 6, 5)).replace(tzinfo=dt_util.get_default_time_zone())
+    forecast = {"temps": [(8, 2)] * 7}
+
+    async def get_forecasts(call):
+        start = fixed.date()
+        return {
+            "weather.home": {
+                "forecast": [
+                    {"datetime": f"{start.replace(day=start.day + i).isoformat()}T12:00:00+00:00",
+                     "temperature": hi, "templow": lo}
+                    for i, (hi, lo) in enumerate(forecast["temps"])
+                ]
+            }
+        }
+
+    hass.services.async_register("weather", "get_forecasts", get_forecasts, supports_response=SupportsResponse.ONLY)
+
+    with patch("custom_components.heizplan.manager.dt_util.now", return_value=fixed):
+        entry, _, _ = await _setup(hass)
+        hass.states.async_set("switch.heizperiode", "off")
+        turn_on = async_mock_service(hass, "switch", "turn_on")
+        turn_off = async_mock_service(hass, "switch", "turn_off")
+        manager = hass.data[DOMAIN][entry.entry_id]
+
+        await hass.services.async_call(
+            DOMAIN, "set_season_auto", {"mode": "weather", "weather_entity": "weather.home"}, blocking=True
+        )
+        await hass.async_block_till_done()
+        assert len(turn_on) == 1 and turn_on[0].data["entity_id"] == "switch.heizperiode"
+        assert manager.season_status["values"] == [5.0] * 6
+
+        # Mock schaltet nicht wirklich -> Zustand selbst setzen; danach Hand-Aus
+        hass.states.async_set("switch.heizperiode", "off")
+        await manager.async_season_check()
+        assert len(turn_on) == 1  # gleiche Lage -> keine neue Schaltung
+
+        forecast["temps"] = [(20, 12)] * 7  # Mittel 16 > 15
+        hass.states.async_set("switch.heizperiode", "on")
+        await manager.async_season_check()
+        assert len(turn_off) == 1
+
+        ws = await hass_ws_client(hass)
+        await ws.send_json({"id": 1, "type": "heizplan/get"})
+        msg = await ws.receive_json()
+        assert msg["result"]["season_auto"]["mode"] == "weather"
+        assert msg["result"]["season_status"]["decision"] is False
+
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_season_auto_dates(hass: HomeAssistant):
+    fixed = dt_util.as_local(datetime(2026, 10, 1, 0, 5)).replace(tzinfo=dt_util.get_default_time_zone())
+    with patch("custom_components.heizplan.manager.dt_util.now", return_value=fixed):
+        entry, _, _ = await _setup(hass)
+        hass.states.async_set("switch.heizperiode", "off")
+        turn_on = async_mock_service(hass, "switch", "turn_on")
+        manager = hass.data[DOMAIN][entry.entry_id]
+        await manager.async_set_season_auto({"mode": "dates", "on_date": "01.10.", "off_date": "01.05."})
+        assert len(turn_on) == 1
+        await manager.async_season_check()   # gleicher Tag -> nicht nochmal
+        assert len(turn_on) == 1
+        await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()

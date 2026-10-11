@@ -71,3 +71,50 @@ update_room:
         select:
           multiple: true
           options: ["1","2","3","4","5","6","7","8","9","10","11","12"]
+set_season_auto:
+  fields:
+    mode:
+      selector:
+        select:
+          options:
+            - manual
+            - dates
+            - weather
+    on_date:
+      example: "01.10."
+      selector:
+        text:
+    off_date:
+      example: "01.05."
+      selector:
+        text:
+    weather_entity:
+      selector:
+        entity:
+          domain: weather
+    on_below:
+      selector:
+        number:
+          min: -10
+          max: 25
+          step: 0.5
+          unit_of_measurement: "°C"
+    off_above:
+      selector:
+        number:
+          min: -10
+          max: 30
+          step: 0.5
+          unit_of_measurement: "°C"
+    days:
+      selector:
+        number:
+          min: 1
+          max: 10
+    basis:
+      selector:
+        select:
+          options:
+            - mean
+            - max
+            - min

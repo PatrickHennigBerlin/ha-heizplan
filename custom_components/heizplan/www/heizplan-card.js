@@ -2,7 +2,7 @@
  * Heizplan-Karte – Übersicht, Wochenplan-Editor (je Raum oder alle Räume), Vorlagen
  * gehört zur Integration custom_components/heizplan (wird von ihr ausgeliefert).
  */
-const HP_VERSION = "0.2.1";
+const HP_VERSION = "0.3.0";
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABEL = { mon: "Mo", tue: "Di", wed: "Mi", thu: "Do", fri: "Fr", sat: "Sa", sun: "So" };
 const DAY_LONG = { mon: "Montag", tue: "Dienstag", wed: "Mittwoch", thu: "Donnerstag", fri: "Freitag", sat: "Samstag", sun: "Sonntag" };
@@ -59,7 +59,7 @@ class HeizplanCard extends HTMLElement {
 
   setConfig(config) {
     this._config = { view: "overview", ...config };
-    this._tab = ["week", "templates"].includes(this._config.view) ? this._config.view : "overview";
+    this._tab = ["week", "templates", "season"].includes(this._config.view) ? this._config.view : "overview";
     if (config.room) this._room = config.room;
   }
 
@@ -81,7 +81,7 @@ class HeizplanCard extends HTMLElement {
   _subscribe() {
     if (this._unsub || !this._hass) return;
     this._unsub = this._hass.connection
-      .subscribeMessage((msg) => { this._data = msg; this._error = null; if (!this._drag && !this._popup && !this._copy) this._render(); }, { type: "heizplan/subscribe" })
+      .subscribeMessage((msg) => { this._data = msg; this._error = null; if (!this._drag && !this._popup && !this._copy && !this._seasonDraft) this._render(); }, { type: "heizplan/subscribe" })
       .catch((err) => { this._error = err.message || String(err); this._unsub = null; this._render(); });
   }
 
@@ -163,11 +163,11 @@ class HeizplanCard extends HTMLElement {
     } else if (!Object.keys(this._data.rooms).length) {
       body = `<div class="muted pad">Noch keine Räume. Räume über den Dienst <code>heizplan.import_scheduler</code> übernehmen.</div>`;
     } else {
-      body = this._tab === "week" ? this._renderWeek() : this._tab === "templates" ? this._renderTemplates() : this._renderOverview();
+      body = this._tab === "week" ? this._renderWeek() : this._tab === "templates" ? this._renderTemplates() : this._tab === "season" ? this._renderSeason() : this._renderOverview();
     }
     const tabs = this._config.hide_tabs ? "" : `
       <div class="tabs">
-        ${[["overview", "Übersicht"], ["week", "Wochenplan"], ["templates", "Vorlagen"]]
+        ${[["overview", "Übersicht"], ["week", "Wochenplan"], ["templates", "Vorlagen"], ["season", "Heizperiode"]]
           .map(([k, l]) => `<button class="tab ${this._tab === k ? "on" : ""}" data-tab="${k}">${l}</button>`).join("")}
       </div>`;
     this.shadowRoot.innerHTML = `
@@ -177,7 +177,7 @@ class HeizplanCard extends HTMLElement {
           <div class="title">${esc(title)}</div>
           ${this._data ? this._renderMode() : ""}
         </div>
-        ${this._data && !this._data.season_active ? `<div class="banner">Heizperiode ist aus – Heizplan schreibt keine Temperaturen.</div>` : ""}
+        ${this._data && !this._data.season_active ? `<div class="banner" data-tab="season">Heizperiode ist aus – Heizplan schreibt keine Temperaturen. <span class="blink">Heizperiode ›</span></div>` : ""}
         ${this._error && this._data ? `<div class="err">${esc(this._error)}</div>` : ""}
         ${tabs}
         <div class="body">${body}</div>
@@ -350,6 +350,65 @@ class HeizplanCard extends HTMLElement {
     }).join("");
   }
 
+  _renderSeason() {
+    const a = this._seasonDraft || this._data.season_auto || {};
+    const st = this._data.season_status || {};
+    const ent = this._data.season_entity;
+    const on = this._data.season_active;
+    const weathers = Object.keys(this._hass?.states || {}).filter((e) => e.startsWith("weather.")).sort();
+    const dm = (v) => /^\d{2}-\d{2}$/.test(String(v || "")) ? `${String(v).slice(3)}.${String(v).slice(0, 2)}.` : (v ?? "");
+    const num = (v) => (v === undefined || v === null ? "" : String(v).replace(".", ","));
+    const field = (key, label, value, extra = "") =>
+      `<label class="sfield"><span>${label}</span><input data-sa-field="${key}" value="${esc(value)}" ${extra}></label>`;
+    const basisLabel = { mean: "Tagesmittel", max: "Höchstwert", min: "Tiefstwert" };
+    let detail = "";
+    if (a.mode === "dates") {
+      detail = `<div class="sgrid">
+          ${field("on_date", "An ab (TT.MM)", dm(a.on_date), 'inputmode="decimal" placeholder="01.10."')}
+          ${field("off_date", "Aus ab (TT.MM)", dm(a.off_date), 'inputmode="decimal" placeholder="01.05."')}
+        </div>
+        <div class="hint">Schaltet am jeweiligen Tag um 0:05 (bzw. beim Start von Home Assistant an diesem Tag). Dazwischen bleibt Schalten von Hand möglich.</div>`;
+    } else if (a.mode === "weather") {
+      detail = `<div class="sgrid">
+          <label class="sfield wide"><span>Wetter</span><select data-sa-field="weather_entity">
+            ${weathers.length ? "" : `<option value="">keine Wetter-Entität gefunden</option>`}
+            ${weathers.map((w) => `<option value="${esc(w)}" ${w === a.weather_entity ? "selected" : ""}>${esc(this._hass.states[w].attributes.friendly_name || w)}</option>`).join("")}
+          </select></label>
+          ${field("on_below", "An, wenn alle unter (°C)", num(a.on_below), 'inputmode="decimal"')}
+          ${field("off_above", "Aus, wenn alle über (°C)", num(a.off_above), 'inputmode="decimal"')}
+          ${field("days", "Tage (ab heute)", a.days ?? 6, 'inputmode="numeric"')}
+          <label class="sfield"><span>Wert je Tag</span><select data-sa-field="basis">
+            ${Object.entries(basisLabel).map(([k, l]) => `<option value="${k}" ${k === a.basis ? "selected" : ""}>${l}</option>`).join("")}
+          </select></label>
+        </div>
+        <div class="hint">Geprüft täglich um 6:05 und 18:05 und beim Start. Geschaltet wird nur, wenn sich das Ergebnis ändert – wer von Hand umschaltet, wird nicht gleich wieder überstimmt.</div>`;
+    } else {
+      detail = `<div class="hint">Die Heizperiode wird nur von Hand geschaltet (hier, im Dashboard oder am S7).</div>`;
+    }
+    let statusHtml = "";
+    if (!this._seasonDraft && st.checked && st.mode === a.mode && a.mode !== "manual") {
+      const t = new Date(st.checked).toLocaleString("de-DE", { weekday: "short", hour: "2-digit", minute: "2-digit" });
+      const vals = Array.isArray(st.values) && st.values.length
+        ? `<div class="svals">${st.values.map((v) => `<span style="background:${tempColor(v)}">${fmtT(v)}°</span>`).join("")}</div>` : "";
+      statusHtml = `<div class="sstatus"><div class="lbl">Letzte Prüfung ${esc(t)}</div>${vals}<div>${esc(st.text || "")}</div></div>`;
+    }
+    return `
+      <div class="season">
+        <div class="srow">
+          <div><div class="lbl">Heizperiode</div><div class="big">${on ? "An" : "Aus"}</div></div>
+          ${ent
+            ? `<div class="mode"><button class="seg ${on ? "on" : ""}" data-season-set="1">An</button><button class="seg ${!on ? "on" : ""}" data-season-set="0">Aus</button></div>`
+            : `<span class="muted">Keine Heizperiode-Entität eingestellt</span>`}
+        </div>
+        <div class="lbl">Automatisch schalten</div>
+        <div class="chips">${[["manual", "Manuell"], ["dates", "Nach Datum"], ["weather", "Nach Wetter"]]
+          .map(([k, l]) => `<button class="chip ${a.mode === k ? "on" : ""}" data-sa-mode="${k}">${l}</button>`).join("")}</div>
+        ${detail}
+        ${a.mode !== "manual" || this._seasonDraft ? `<div class="dact"><button class="txt" data-sa-cancel>Verwerfen</button><button class="txt primary" data-sa-save>Speichern</button></div>` : ""}
+        ${statusHtml}
+      </div>`;
+  }
+
   _renderPopup() {
     const { room: roomId, day, idx } = this._popup;
     const room = this._roomById(roomId);
@@ -416,6 +475,35 @@ class HeizplanCard extends HTMLElement {
       if (sp.parentElement.clientWidth < sp.scrollWidth + 6) sp.style.visibility = "hidden";
     }));
     $("[data-tab]").forEach((el) => el.addEventListener("click", () => { this._tab = el.dataset.tab; this._render(); }));
+    $("[data-season-set]").forEach((el) => el.addEventListener("click", () => {
+      const ent = this._data.season_entity;
+      if (!ent) return;
+      this._hass.callService(ent.split(".")[0], el.dataset.seasonSet === "1" ? "turn_on" : "turn_off", { entity_id: ent });
+    }));
+    $("[data-sa-mode]").forEach((el) => el.addEventListener("click", () => {
+      const base = this._seasonDraft || { ...(this._data.season_auto || {}) };
+      base.mode = el.dataset.saMode;
+      if (base.mode === "weather" && !base.weather_entity) {
+        base.weather_entity = Object.keys(this._hass.states).filter((e) => e.startsWith("weather.")).sort()[0] || null;
+      }
+      this._seasonDraft = base;
+      this._render();
+    }));
+    $("[data-sa-field]").forEach((el) => {
+      const upd = () => {
+        if (!this._seasonDraft) this._seasonDraft = { ...(this._data.season_auto || {}) };
+        this._seasonDraft[el.dataset.saField] = el.value;
+      };
+      el.addEventListener(el.tagName === "SELECT" ? "change" : "input", upd);
+    });
+    $("[data-sa-cancel]").forEach((el) => el.addEventListener("click", () => { this._seasonDraft = null; this._render(); }));
+    $("[data-sa-save]").forEach((el) => el.addEventListener("click", () => {
+      const d = this._seasonDraft || this._data.season_auto || {};
+      const n = (v) => Number(String(v).replace(",", "."));
+      const payload = { type: "heizplan/set_season_auto", mode: d.mode, on_date: String(d.on_date ?? ""), off_date: String(d.off_date ?? ""),
+        weather_entity: d.weather_entity || null, on_below: n(d.on_below), off_above: n(d.off_above), days: Math.round(n(d.days)), basis: d.basis };
+      this._call(payload).then(() => { this._seasonDraft = null; this._render(); }).catch(() => {});
+    }));
     $("[data-mode]").forEach((el) => el.addEventListener("click", () => this._call({ type: "heizplan/set_mode", mode: el.dataset.mode })));
     $("[data-away]").forEach((el) => el.addEventListener("click", () =>
       this._call({ type: "heizplan/set_away_temp", temp: this._data.away_temp + Number(el.dataset.away) })));
@@ -670,6 +758,18 @@ const STYLE = `
   .days { display:flex; flex-wrap:wrap; gap:10px; }
   .quick { display:flex; gap:4px; margin-top:8px; }
   @media (max-width: 500px) { .rname { width:80px; } .week.all .scale > span:first-child { width:80px !important; } .ticks span:nth-child(even) { display:none; } .temps { gap:12px; } }
+  .season { display:flex; flex-direction:column; gap:10px; }
+  .srow { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  .sgrid { display:grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap:10px; }
+  .sfield { display:flex; flex-direction:column; gap:4px; font-size:.85em; color:var(--secondary-text-color); }
+  .sfield.wide { grid-column: 1 / -1; }
+  .sfield input, .sfield select { font:inherit; font-size:1.05em; color:var(--primary-text-color); padding:8px; border-radius:8px;
+    border:1px solid var(--divider-color); background:var(--card-background-color); min-width:0; }
+  .sstatus { border:1px solid var(--divider-color); border-radius:10px; padding:8px 10px; display:flex; flex-direction:column; gap:6px; font-size:.9em; }
+  .svals { display:flex; gap:4px; flex-wrap:wrap; }
+  .svals span { color:#fff; font-weight:600; font-size:.85em; padding:2px 6px; border-radius:6px; text-shadow:0 0 2px rgba(0,0,0,.4); }
+  .banner[data-tab] { cursor:pointer; }
+  .blink { color: var(--primary-color); white-space:nowrap; }
   /* Handy / schmale Karte: kompakte Räume, Auswahl-Leisten wischen statt umbrechen */
   :host { display:block; container-type: inline-size; }
   @container (max-width: 520px) {

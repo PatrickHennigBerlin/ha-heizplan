@@ -110,6 +110,44 @@
           "description": "z. B. 10,11,12,1,2,3,4"
         }
       }
+    },
+    "set_season_auto": {
+      "name": "Heizperiode-Automatik",
+      "description": "Steuert den Heizperiode-Schalter manuell, nach Datum oder nach Wettervorhersage.",
+      "fields": {
+        "mode": {
+          "name": "Steuerung",
+          "description": "manual = von Hand, dates = nach Datum, weather = nach Wettervorhersage"
+        },
+        "on_date": {
+          "name": "An ab",
+          "description": "Datum TT.MM, an dem die Heizperiode eingeschaltet wird"
+        },
+        "off_date": {
+          "name": "Aus ab",
+          "description": "Datum TT.MM, an dem die Heizperiode ausgeschaltet wird"
+        },
+        "weather_entity": {
+          "name": "Wetter",
+          "description": "Wetter-Entität mit Tagesvorhersage"
+        },
+        "on_below": {
+          "name": "An unter",
+          "description": "An, wenn alle Tage unter diesem Wert liegen"
+        },
+        "off_above": {
+          "name": "Aus über",
+          "description": "Aus, wenn alle Tage über diesem Wert liegen"
+        },
+        "days": {
+          "name": "Tage",
+          "description": "Anzahl Vorhersagetage (ab heute)"
+        },
+        "basis": {
+          "name": "Basis",
+          "description": "mean = Tagesmittel, max = Höchstwert, min = Tiefstwert"
+        }
+      }
     }
   }
 }
