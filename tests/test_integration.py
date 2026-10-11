@@ -135,4 +135,15 @@ async def test_import_write_override_away(hass: HomeAssistant, hass_ws_client):
         msg = await client.receive_json()
         assert msg["result"]["template_id"] == "winter"
 
+        # Frostschutz (Sonderfall) wird NICHT auf Komfort gestellt
+        hass.states.async_set("switch.heizperiode", "on")
+        hass.states.async_set("climate.lounge", "heat", {**hass.states.get("climate.lounge").attributes,
+                                                           "preset_mode": "building_protection"})
+        await hass.async_block_till_done()
+        presets_before = len(set_preset)
+        await client.send_json({"id": 9, "type": "heizplan/clear_override", "room_id": "lounge"})
+        await client.receive_json()
+        assert len(set_preset) == presets_before
+        assert set_temp[-1].data["temperature"] == 21.5
+
     assert await hass.config_entries.async_unload(entry.entry_id)

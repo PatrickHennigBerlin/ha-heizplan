@@ -24,6 +24,7 @@ from .const import (
     CONF_SEASON_ENTITY,
     DEFAULT_AWAY_TEMP,
     DEFAULT_COMFORT_PRESET,
+    CORRECTED_PRESETS,
     DEFAULT_TEMP,
     MODE_AWAY,
     MODE_OFF,
@@ -248,7 +249,13 @@ class HeizplanManager:
             if self.keep_comfort:
                 presets = state.attributes.get("preset_modes") or []
                 preset = state.attributes.get("preset_mode")
-                if self.comfort_preset in presets and preset != self.comfort_preset:
+                # Nur Absenk-Betriebsarten (Standby/Nacht) zurück auf Komfort stellen –
+                # sie verfälschen den Sollwert. Frostschutz o. Ä. bleiben für Sonderfälle unangetastet.
+                if (
+                    self.comfort_preset in presets
+                    and preset in CORRECTED_PRESETS
+                    and preset != self.comfort_preset
+                ):
                     await self.hass.services.async_call(
                         "climate",
                         "set_preset_mode",

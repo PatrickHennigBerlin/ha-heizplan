@@ -55,7 +55,7 @@ Beispiel „Außer Haus“: `heizplan.set_mode` mit `mode: away`; bei Rückkehr 
 - Jede Minute wird je Raum der Sollwert berechnet: *Override* → *Abwesend* → *Wochenplan*.
 - Geschrieben wird nur bei einer Änderung (Blockwechsel, Bearbeitung, Modus) und beim Start –
   eine manuelle Änderung am Thermostat bleibt also bis zum nächsten Blockwechsel bestehen.
-- Vor dem Schreiben wird der Regler auf das Komfort-Preset gestellt (abschaltbar).
+- Steht ein Regler auf einer Absenk-Betriebsart (Standby/Nacht), wird er vor dem Schreiben auf Komfort gestellt (abschaltbar). Frostschutz und andere Betriebsarten bleiben für Sonderfälle frei – die Karte zeigt dann einen Hinweis.
 - Werte werden auf `min_temp`/`max_temp` der climate-Entity begrenzt.
 
 ## Entwicklung

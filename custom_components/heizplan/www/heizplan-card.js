@@ -7,6 +7,7 @@ const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABEL = { mon: "Mo", tue: "Di", wed: "Mi", thu: "Do", fri: "Fr", sat: "Sa", sun: "So" };
 const DAY_LONG = { mon: "Montag", tue: "Dienstag", wed: "Mittwoch", thu: "Donnerstag", fri: "Freitag", sat: "Samstag", sun: "Sonntag" };
 const SNAP = 15; // Minuten
+const PRESET_LABEL = { building_protection: "Frostschutz", standby: "Standby", economy: "Nacht" };
 const SOURCE_LABEL = { plan: "Plan", away: "Abwesend", override: "Manuell", inactive: "Inaktiv" };
 
 const toMin = (s) => { const [h, m] = s.split(":").map(Number); return h * 60 + m; };
@@ -209,6 +210,7 @@ class HeizplanCard extends HTMLElement {
             ${blocks.map((b) => `<div class="blk" style="left:${b.start / 14.4}%;width:${(b.end - b.start) / 14.4}%;background:${tempColor(b.temp)}"></div>`).join("")}
             <div class="now" style="left:${nowMin / 14.4}%"></div>
           </div>
+          ${s.climate_preset && s.climate_preset !== "comfort" ? `<div class="warn">Regler steht auf ${esc(PRESET_LABEL[s.climate_preset] || s.climate_preset)} – Soll gilt erst wieder auf Komfort</div>` : ""}
           <div class="next">${esc(s.source === "plan" ? this._nextText(s) : s.source === "inactive" ? "" : `Plan: ${fmtT(s.plan_temp)} °C`)}</div>
           <div class="actions">
             <button class="mini" data-ovr="${r.id}" data-delta="-0.5" title="2 h kühler">−</button>
@@ -538,6 +540,7 @@ const STYLE = `
   .mid { font-size:1.15em; }
   .next { font-size:.85em; color:var(--secondary-text-color); min-height:1.2em; }
   .actions { display:flex; align-items:center; gap:6px; }
+  .warn { font-size:.8em; padding:4px 8px; border-radius:6px; background: rgba(255,152,0,.18); }
   .hint { font-size:.8em; color:var(--secondary-text-color); }
   .bar { position:relative; height:34px; border-radius:6px; background: rgba(127,127,127,.12); flex:1; touch-action:none; }
   .bar.small { height:10px; border-radius:5px; overflow:hidden; }
