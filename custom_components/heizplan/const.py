@@ -1,7 +1,7 @@
 """Konstanten für Heizplan."""
 
 DOMAIN = "heizplan"
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 STORAGE_KEY = "heizplan"
 STORAGE_VERSION = 1
@@ -34,6 +34,3 @@ DEFAULT_COMFORT_PRESET = "comfort"
 SIGNAL_UPDATED = "heizplan_updated"
 EVENT_UPDATED = "heizplan_updated"
 
-# Diese Betriebsarten senken den Sollwert im Regler ab -> werden auf Komfort korrigiert.
-# Andere (z. B. building_protection/Frostschutz) bleiben für Sonderfälle frei nutzbar.
-CORRECTED_PRESETS = ["standby", "economy", "night", "eco"]

@@ -24,7 +24,6 @@ from .const import (
     CONF_SEASON_ENTITY,
     DEFAULT_AWAY_TEMP,
     DEFAULT_COMFORT_PRESET,
-    CORRECTED_PRESETS,
     DEFAULT_TEMP,
     MODE_AWAY,
     MODE_OFF,
@@ -94,6 +93,8 @@ class HeizplanManager:
         self._last_written: dict[str, float] = {}
         # Räume, deren Regler einmalig (auch aus Frostschutz) auf Komfort gestellt werden sollen
         self._restore_pending: set[str] = set()
+        # letzte Komfort-Korrektur je Raum (Bremse, falls ein Regler nicht reagiert)
+        self._comfort_tries: dict[str, datetime] = {}
         self._unsubs: list[CALLBACK_TYPE] = []
         # Heizperiode-Automatik (manuell / Datum / Wetter)
         self.season_auto: dict[str, Any] = dict(DEFAULT_SEASON_AUTO)
@@ -389,9 +390,11 @@ class HeizplanManager:
             target = status["target"]
             if target is None:
                 continue
-            if not force and self._last_written.get(room_id) == target and room_id not in self._restore_pending:
+            needs_comfort = self._needs_comfort(room_id, now)
+            if (not force and self._last_written.get(room_id) == target
+                    and room_id not in self._restore_pending and not needs_comfort):
                 continue
-            restore = room_id in self._restore_pending
+            restore = room_id in self._restore_pending or needs_comfort
             if await self._write(room_id, target, restore):
                 self._last_written[room_id] = target
                 self._restore_pending.discard(room_id)
@@ -399,6 +402,24 @@ class HeizplanManager:
         if changed:
             self._schedule_save()
         async_dispatcher_send(self.hass, SIGNAL_UPDATED)
+
+    def _needs_comfort(self, room_id: str, now: datetime) -> bool:
+        """Aktiver Heizkörper-Raum, dessen Regler nicht auf Komfort steht (z. B. nach Busausfall Frostschutz).
+
+        Höchstens alle 5 Minuten ein neuer Versuch je Raum, damit ein nicht reagierender
+        Regler den Bus nicht im Minutentakt belastet.
+        """
+        if not self.keep_comfort or room_kind(self.rooms[room_id]) != KIND_CLIMATE:
+            return False
+        state = self.hass.states.get(self.rooms[room_id]["climate"])
+        if state is None or state.state in ("unavailable", "unknown"):
+            return False
+        presets = state.attributes.get("preset_modes") or []
+        preset = state.attributes.get("preset_mode")
+        if self.comfort_preset not in presets or preset in (None, self.comfort_preset):
+            return False
+        last = self._comfort_tries.get(room_id)
+        return last is None or now - last >= timedelta(minutes=5)
 
     async def _write(self, room_id: str, target: Any, restore_all: bool = False) -> bool:
         entity_id = self.rooms[room_id]["climate"]
@@ -421,13 +442,14 @@ class HeizplanManager:
             if self.keep_comfort:
                 presets = state.attributes.get("preset_modes") or []
                 preset = state.attributes.get("preset_mode")
-                # Nur Absenk-Betriebsarten (Standby/Nacht) zurück auf Komfort stellen –
-                # sie verfälschen den Sollwert. Frostschutz o. Ä. bleiben für Sonderfälle unangetastet.
+                # In der Heizperiode immer Komfort: Standby, Nacht und auch Frostschutz
+                # (z. B. nach Busausfall/Reset) werden zurückgestellt (Patrick, 11.10.2026).
                 if (
                     self.comfort_preset in presets
-                    and (restore_all or preset in CORRECTED_PRESETS)
+                    and preset is not None
                     and preset != self.comfort_preset
                 ):
+                    self._comfort_tries[room_id] = dt_util.now()
                     await self.hass.services.async_call(
                         "climate",
                         "set_preset_mode",

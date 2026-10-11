@@ -2,7 +2,7 @@
  * Heizplan-Karte – Übersicht, Wochenplan-Editor (je Raum oder alle Räume), Vorlagen
  * gehört zur Integration custom_components/heizplan (wird von ihr ausgeliefert).
  */
-const HP_VERSION = "0.3.0";
+const HP_VERSION = "0.3.1";
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABEL = { mon: "Mo", tue: "Di", wed: "Mi", thu: "Do", fri: "Fr", sat: "Sa", sun: "So" };
 const DAY_LONG = { mon: "Montag", tue: "Dienstag", wed: "Mittwoch", thu: "Donnerstag", fri: "Freitag", sat: "Samstag", sun: "Sonntag" };
@@ -242,7 +242,7 @@ class HeizplanCard extends HTMLElement {
             ${s.valve !== null && s.valve !== undefined ? `<div><div class="lbl">Ventil</div><div class="mid">${Math.round(s.valve)} %</div></div>` : ""}
           </div>
           ${this._miniBar(dayBlocks(r.plan[tk]), nowMin)}
-          ${!sw && s.source !== "inactive" && s.climate_preset && s.climate_preset !== "comfort" ? `<div class="warn">Regler steht auf ${esc(PRESET_LABEL[s.climate_preset] || s.climate_preset)} – Soll gilt erst wieder auf Komfort</div>` : ""}
+          ${!sw && s.source !== "inactive" && s.climate_preset && s.climate_preset !== "comfort" ? `<div class="warn">Regler steht auf ${esc(PRESET_LABEL[s.climate_preset] || s.climate_preset)} – wird automatisch auf Komfort zurückgestellt</div>` : ""}
           <div class="next">${esc(s.source === "plan" ? this._nextText(s) : s.source === "inactive" ? (sw ? "außerhalb der Saison" : "") : `Plan: ${valueText(s.plan_temp)}`)}</div>
           <div class="actions">
             ${actions}

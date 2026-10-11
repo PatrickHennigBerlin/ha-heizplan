@@ -61,8 +61,9 @@ Beispiel „Außer Haus“: `heizplan.set_mode` mit `mode: away`; bei Rückkehr 
 - Jede Minute wird je Raum der Sollwert berechnet: *Override* → *Abwesend* → *Wochenplan*.
 - Geschrieben wird nur bei einer Änderung (Blockwechsel, Bearbeitung, Modus) und beim Start –
   eine manuelle Änderung am Thermostat bleibt also bis zum nächsten Blockwechsel bestehen.
-- Steht ein Regler auf einer Absenk-Betriebsart (Standby/Nacht), wird er vor dem Schreiben auf Komfort gestellt (abschaltbar). Frostschutz und andere Betriebsarten bleiben für Sonderfälle frei – die Karte zeigt dann einen Hinweis.
-- Ausnahme: beim **Start von Home Assistant** (z. B. nach Stromausfall) und beim **Einschalten der Heizperiode** werden alle Regler einmalig auf Komfort gestellt, auch aus Frostschutz.
+- **Regler immer auf Komfort** (abschaltbar): Steht ein aktiver Raum auf Standby, Nacht oder Frostschutz – z. B. weil der Regler nach einem Busausfall neu startet –, stellt Heizplan ihn spätestens nach einer Minute auf Komfort und schreibt den Plan-Sollwert neu. Reagiert ein Regler nicht, wird höchstens alle 5 Minuten erneut versucht.
+- Ist die Heizperiode aus (Raum inaktiv), wird nichts korrigiert – Frostschutz im Sommer bleibt.
+- Beim **Start von Home Assistant** und beim **Einschalten der Heizperiode** werden alle Regler sofort auf Komfort gestellt.
 - Werte werden auf `min_temp`/`max_temp` der climate-Entity begrenzt.
 
 ## Entwicklung

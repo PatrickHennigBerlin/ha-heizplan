@@ -1,6 +1,6 @@
 """Integrationstest mit echter HA-Testinstanz."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -144,14 +144,36 @@ async def test_import_write_override_away(hass: HomeAssistant, hass_ws_client):
         assert len(set_preset) == presets_before + 1
         assert set_preset[-1].data["preset_mode"] == "comfort"
 
-        # Danach (Sonderfall) Frostschutz -> bei normalem Schreiben NICHT anfassen
+        # Danach Frostschutz (z. B. Cheops-Reset nach Busausfall) -> beim nächsten Minuten-Takt
+        # wieder Komfort + Sollwert; Bremse: frühestens 5 min nach dem letzten Versuch
+        manager = hass.data[DOMAIN][entry.entry_id]
         hass.states.async_set("climate.lounge", "heat", frost)
         await hass.async_block_till_done()
         presets_before = len(set_preset)
-        await client.send_json({"id": 9, "type": "heizplan/clear_override", "room_id": "lounge"})
-        await client.receive_json()
-        assert len(set_preset) == presets_before
-        assert set_temp[-1].data["temperature"] == 21.5
+        await manager.async_apply()
+        assert len(set_preset) == presets_before  # innerhalb der 5 min: kein neuer Versuch
+        later = fixed + timedelta(minutes=6)
+        with patch("custom_components.heizplan.manager.dt_util.now", return_value=later):
+            temps_before = len(set_temp)
+            await manager.async_apply()
+            assert len(set_preset) == presets_before + 1
+            assert set_preset[-1].data["preset_mode"] == "comfort"
+            assert len(set_temp) == temps_before + 1
+            # Standby (z. B. am S7 gewählt) ebenso, erst wieder nach 5 min
+            standby = {**frost, "preset_mode": "standby"}
+            hass.states.async_set("climate.lounge", "heat", standby)
+            await manager.async_apply()
+            assert len(set_preset) == presets_before + 1
+        with patch("custom_components.heizplan.manager.dt_util.now", return_value=later + timedelta(minutes=6)):
+            await manager.async_apply()
+            assert len(set_preset) == presets_before + 2
+        # Heizperiode aus + Frostschutz -> nichts korrigieren
+        hass.states.async_set("switch.heizperiode", "off")
+        hass.states.async_set("climate.lounge", "heat", frost)
+        await hass.async_block_till_done()
+        with patch("custom_components.heizplan.manager.dt_util.now", return_value=later + timedelta(minutes=30)):
+            await manager.async_apply()
+        assert len(set_preset) == presets_before + 2
 
     assert await hass.config_entries.async_unload(entry.entry_id)
 
