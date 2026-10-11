@@ -2,7 +2,7 @@
  * Heizplan-Karte – Übersicht, Wochenplan-Editor (je Raum oder alle Räume), Vorlagen
  * gehört zur Integration custom_components/heizplan (wird von ihr ausgeliefert).
  */
-const HP_VERSION = "0.2.0";
+const HP_VERSION = "0.2.1";
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABEL = { mon: "Mo", tue: "Di", wed: "Mi", thu: "Do", fri: "Fr", sat: "Sa", sun: "So" };
 const DAY_LONG = { mon: "Montag", tue: "Dienstag", wed: "Mittwoch", thu: "Donnerstag", fri: "Freitag", sat: "Samstag", sun: "Sonntag" };
@@ -242,7 +242,7 @@ class HeizplanCard extends HTMLElement {
             ${s.valve !== null && s.valve !== undefined ? `<div><div class="lbl">Ventil</div><div class="mid">${Math.round(s.valve)} %</div></div>` : ""}
           </div>
           ${this._miniBar(dayBlocks(r.plan[tk]), nowMin)}
-          ${!sw && s.climate_preset && s.climate_preset !== "comfort" ? `<div class="warn">Regler steht auf ${esc(PRESET_LABEL[s.climate_preset] || s.climate_preset)} – Soll gilt erst wieder auf Komfort</div>` : ""}
+          ${!sw && s.source !== "inactive" && s.climate_preset && s.climate_preset !== "comfort" ? `<div class="warn">Regler steht auf ${esc(PRESET_LABEL[s.climate_preset] || s.climate_preset)} – Soll gilt erst wieder auf Komfort</div>` : ""}
           <div class="next">${esc(s.source === "plan" ? this._nextText(s) : s.source === "inactive" ? (sw ? "außerhalb der Saison" : "") : `Plan: ${valueText(s.plan_temp)}`)}</div>
           <div class="actions">
             ${actions}
@@ -258,7 +258,7 @@ class HeizplanCard extends HTMLElement {
       <div class="bar" data-room="${room.id}" data-day="${day}">
         ${blocks.map((b) => `
           <div class="blk click" data-room="${room.id}" data-day="${day}" data-idx="${b.idx}" style="left:${b.start / 14.4}%;width:${(b.end - b.start) / 14.4}%;background:${valueColor(b.value)}">
-            <span>${valueText(b.value, true)}</span>
+            <span data-short="${typeof b.value === "boolean" ? (b.value ? "An" : "Aus") : (Number.isInteger(Number(b.value)) ? `${Number(b.value)}°` : fmtT(b.value))}">${valueText(b.value, true)}</span>
           </div>
           ${b.idx > 0 ? `<div class="handle" data-room="${room.id}" data-day="${day}" data-idx="${b.idx}" style="left:${b.start / 14.4}%" title="${fmtMin(b.start)} – ziehen zum Verschieben"></div>` : ""}`).join("")}
         ${nowMin !== null ? `<div class="now" style="left:${nowMin / 14.4}%"></div>` : ""}
@@ -412,6 +412,7 @@ class HeizplanCard extends HTMLElement {
   _bind() {
     const $ = (sel) => this.shadowRoot.querySelectorAll(sel);
     requestAnimationFrame(() => $(".blk span").forEach((sp) => {
+      if (sp.parentElement.clientWidth < sp.scrollWidth + 6 && sp.dataset.short) sp.textContent = sp.dataset.short;
       if (sp.parentElement.clientWidth < sp.scrollWidth + 6) sp.style.visibility = "hidden";
     }));
     $("[data-tab]").forEach((el) => el.addEventListener("click", () => { this._tab = el.dataset.tab; this._render(); }));
@@ -669,6 +670,30 @@ const STYLE = `
   .days { display:flex; flex-wrap:wrap; gap:10px; }
   .quick { display:flex; gap:4px; margin-top:8px; }
   @media (max-width: 500px) { .rname { width:80px; } .week.all .scale > span:first-child { width:80px !important; } .ticks span:nth-child(even) { display:none; } .temps { gap:12px; } }
+  /* Handy / schmale Karte: kompakte Räume, Auswahl-Leisten wischen statt umbrechen */
+  :host { display:block; container-type: inline-size; }
+  @container (max-width: 520px) {
+    ha-card { padding: 10px 10px 12px; }
+    .head { gap:6px; }
+    .title { font-size: 1.15em; }
+    .mode { flex-wrap:nowrap; gap:4px; }
+    .seg { padding:5px 10px; }
+    .away { margin-left:2px; white-space:nowrap; }
+    .mini { width:34px; height:34px; }
+    .tabs, .chips { flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; -webkit-overflow-scrolling:touch; margin-left:-10px; margin-right:-10px; padding:0 10px; }
+    .tabs::-webkit-scrollbar, .chips::-webkit-scrollbar { display:none; }
+    .tab, .chip, .seg { white-space:nowrap; flex:none; }
+    .grid { grid-template-columns: 1fr; gap: 8px; }
+    .tile { display:grid; grid-template-columns: 1fr auto; column-gap:8px; row-gap:6px; padding:8px 10px; }
+    .tile > .trow, .tile > .bar, .tile > .warn, .tile > .next { grid-column: 1 / -1; }
+    .tile > .temps { grid-column: 1; gap:14px; }
+    .tile > .actions { grid-column: 2; grid-row: 2; align-self:end; }
+    .tile.switch > .actions { flex-direction:column; align-items:flex-end; gap:0; }
+    .tile .hint { display:none; }
+    .tile .big { font-size:1.35em; }
+    .tile .mid { font-size:1em; }
+    .tile .next:empty { display:none; }
+  }
 `;
 
 if (!customElements.get("heizplan-card")) {
