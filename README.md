@@ -56,6 +56,7 @@ Beispiel „Außer Haus“: `heizplan.set_mode` mit `mode: away`; bei Rückkehr 
 - Geschrieben wird nur bei einer Änderung (Blockwechsel, Bearbeitung, Modus) und beim Start –
   eine manuelle Änderung am Thermostat bleibt also bis zum nächsten Blockwechsel bestehen.
 - Steht ein Regler auf einer Absenk-Betriebsart (Standby/Nacht), wird er vor dem Schreiben auf Komfort gestellt (abschaltbar). Frostschutz und andere Betriebsarten bleiben für Sonderfälle frei – die Karte zeigt dann einen Hinweis.
+- Ausnahme: beim **Start von Home Assistant** (z. B. nach Stromausfall) und beim **Einschalten der Heizperiode** werden alle Regler einmalig auf Komfort gestellt, auch aus Frostschutz.
 - Werte werden auf `min_temp`/`max_temp` der climate-Entity begrenzt.
 
 ## Entwicklung

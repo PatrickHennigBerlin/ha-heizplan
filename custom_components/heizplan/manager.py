@@ -69,6 +69,8 @@ class HeizplanManager:
         self.mode: str = MODE_PLAN
         self.away_temp: float = DEFAULT_AWAY_TEMP
         self._last_written: dict[str, float] = {}
+        # Räume, deren Regler einmalig (auch aus Frostschutz) auf Komfort gestellt werden sollen
+        self._restore_pending: set[str] = set()
         self._unsubs: list[CALLBACK_TYPE] = []
 
     # ------------------------------------------------------------------ Optionen
@@ -126,6 +128,9 @@ class HeizplanManager:
                     self.hass, [self.season_entity], self._season_changed
                 )
             )
+        if not self.hass.is_running:
+            # HA-Start (z. B. nach Stromausfall): Regler einmalig auf Komfort, auch aus Frostschutz
+            self._restore_pending = set(self.rooms)
         await self.async_apply(force=True)
 
     @callback
@@ -139,6 +144,9 @@ class HeizplanManager:
 
     async def _season_changed(self, event: Event) -> None:
         self._last_written.clear()
+        new = event.data.get("new_state")
+        if new is not None and new.state == STATE_ON:
+            self._restore_pending = set(self.rooms)
         await self.async_apply(force=True)
 
     # ------------------------------------------------------------------ Status
@@ -230,16 +238,18 @@ class HeizplanManager:
             target = status["target"]
             if target is None:
                 continue
-            if not force and self._last_written.get(room_id) == target:
+            if not force and self._last_written.get(room_id) == target and room_id not in self._restore_pending:
                 continue
-            if await self._write(room_id, target):
+            restore = room_id in self._restore_pending
+            if await self._write(room_id, target, restore):
                 self._last_written[room_id] = target
+                self._restore_pending.discard(room_id)
                 changed = True
         if changed:
             self._schedule_save()
         async_dispatcher_send(self.hass, SIGNAL_UPDATED)
 
-    async def _write(self, room_id: str, target: float) -> bool:
+    async def _write(self, room_id: str, target: float, restore_all: bool = False) -> bool:
         entity_id = self.rooms[room_id]["climate"]
         state = self.hass.states.get(entity_id)
         if state is None or state.state == "unavailable":
@@ -253,7 +263,7 @@ class HeizplanManager:
                 # sie verfälschen den Sollwert. Frostschutz o. Ä. bleiben für Sonderfälle unangetastet.
                 if (
                     self.comfort_preset in presets
-                    and preset in CORRECTED_PRESETS
+                    and (restore_all or preset in CORRECTED_PRESETS)
                     and preset != self.comfort_preset
                 ):
                     await self.hass.services.async_call(
