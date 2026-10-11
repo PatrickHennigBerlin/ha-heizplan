@@ -47,13 +47,71 @@ def _resolve_room(manager: HeizplanManager, value: str) -> str:
     raise ServiceValidationError(f"Unbekannter Raum: {value}")
 
 
+def _lovelace_resources(hass: HomeAssistant):
+    """Ressourcen-Sammlung im Storage-Modus, sonst None."""
+    try:
+        from homeassistant.components.lovelace.const import LOVELACE_DATA
+    except ImportError:  # sehr alte HA-Version
+        return None
+    data = hass.data.get(LOVELACE_DATA)
+    resources = getattr(data, "resources", None)
+    if resources is None or getattr(data, "resource_mode", "storage") != "storage":
+        return None
+    if not hasattr(resources, "async_create_item"):
+        return None
+    return resources
+
+
+async def _async_register_resource(hass: HomeAssistant, card_url: str) -> bool:
+    """Karte als Lovelace-Ressource eintragen bzw. auf die aktuelle Version setzen."""
+    resources = _lovelace_resources(hass)
+    if resources is None:
+        return False
+    try:
+        await resources.async_get_info()  # stellt sicher, dass die Sammlung geladen ist
+        ours = [
+            item for item in resources.async_items()
+            if str(item.get("url", "")).split("?", 1)[0] == CARD_URL
+        ]
+        if not ours:
+            await resources.async_create_item({"res_type": "module", "url": card_url})
+        else:
+            if ours[0].get("url") != card_url:
+                await resources.async_update_item(ours[0]["id"], {"res_type": "module", "url": card_url})
+            for extra in ours[1:]:
+                await resources.async_delete_item(extra["id"])
+    except Exception as err:  # noqa: BLE001 – im Zweifel der alte Weg
+        _LOGGER.warning("Heizplan: Karte nicht als Dashboard-Ressource eintragbar (%s)", err)
+        return False
+    return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Integration gelöscht: Dashboard-Ressource wieder entfernen."""
+    resources = _lovelace_resources(hass)
+    if resources is None:
+        return
+    try:
+        await resources.async_get_info()
+        for item in list(resources.async_items()):
+            if str(item.get("url", "")).split("?", 1)[0] == CARD_URL:
+                await resources.async_delete_item(item["id"])
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.warning("Heizplan: Dashboard-Ressource nicht entfernbar (%s)", err)
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.data.setdefault(DOMAIN, {})
     path = Path(__file__).parent / "www" / "heizplan-card.js"
+    # Mit Cache-Headern ausliefern: die URL trägt die Version, ein Update lädt also neu
     await hass.http.async_register_static_paths(
-        [StaticPathConfig(CARD_URL, str(path), False)]
+        [StaticPathConfig(CARD_URL, str(path), True)]
     )
-    add_extra_js_url(hass, f"{CARD_URL}?v={VERSION}")
+    card_url = f"{CARD_URL}?v={VERSION}"
+    # Als Dashboard-Ressource eintragen: dann lädt das Frontend die Karte zusammen mit
+    # den anderen Karten, bevor das Dashboard aufgebaut wird (sonst kurz „Konfigurationsfehler“).
+    if not await _async_register_resource(hass, card_url):
+        add_extra_js_url(hass, card_url)
     async_register_websocket(hass)
     _register_services(hass)
     return True

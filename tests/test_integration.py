@@ -306,3 +306,29 @@ async def test_season_auto_dates(hass: HomeAssistant):
         assert len(turn_on) == 1
         await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
+
+
+async def test_card_registered_as_dashboard_resource(hass: HomeAssistant):
+    """Karte wird als Lovelace-Ressource mit aktueller Version eingetragen (kein Konfigurationsfehler beim Laden)."""
+    from homeassistant.components.lovelace.const import LOVELACE_DATA
+    from custom_components.heizplan.const import CARD_URL, VERSION
+
+    entry, _, _ = await _setup(hass)
+    resources = hass.data[LOVELACE_DATA].resources
+    ours = [i for i in resources.async_items() if i["url"].split("?")[0] == CARD_URL]
+    assert len(ours) == 1
+    assert ours[0]["url"] == f"{CARD_URL}?v={VERSION}"
+    assert ours[0]["type"] == "module"
+
+    # Alte Version wird beim nächsten Start auf die aktuelle gesetzt, Doppelte entfernt
+    from custom_components.heizplan import _async_register_resource
+    await resources.async_update_item(ours[0]["id"], {"url": f"{CARD_URL}?v=0.0.1"})
+    await resources.async_create_item({"res_type": "module", "url": f"{CARD_URL}?v=0.0.2"})
+    assert await _async_register_resource(hass, f"{CARD_URL}?v={VERSION}")
+    ours = [i for i in resources.async_items() if i["url"].split("?")[0] == CARD_URL]
+    assert [i["url"] for i in ours] == [f"{CARD_URL}?v={VERSION}"]
+
+    # Integration löschen -> Ressource weg
+    await hass.config_entries.async_remove(entry.entry_id)
+    await hass.async_block_till_done()
+    assert not [i for i in resources.async_items() if i["url"].split("?")[0] == CARD_URL]
