@@ -2,7 +2,7 @@
  * Heizplan-Karte – Übersicht, Wochenplan-Editor (je Raum oder alle Räume), Vorlagen
  * gehört zur Integration custom_components/heizplan (wird von ihr ausgeliefert).
  */
-const HP_VERSION = "0.3.2";
+const HP_VERSION = "0.3.3";
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABEL = { mon: "Mo", tue: "Di", wed: "Mi", thu: "Do", fri: "Fr", sat: "Sa", sun: "So" };
 const DAY_LONG = { mon: "Montag", tue: "Dienstag", wed: "Mittwoch", thu: "Donnerstag", fri: "Freitag", sat: "Samstag", sun: "Sonntag" };
@@ -170,9 +170,7 @@ class HeizplanCard extends HTMLElement {
         ${[["overview", "Übersicht"], ["week", "Wochenplan"], ["templates", "Vorlagen"], ["season", "Heizperiode"]]
           .map(([k, l]) => `<button class="tab ${this._tab === k ? "on" : ""}" data-tab="${k}">${l}</button>`).join("")}
       </div>`;
-    this.shadowRoot.innerHTML = `
-      <style>${STYLE}</style>
-      <ha-card>
+    const html = `
         <div class="head">
           <div class="title">${esc(title)}</div>
           ${this._data ? this._renderMode() : ""}
@@ -182,9 +180,54 @@ class HeizplanCard extends HTMLElement {
         ${tabs}
         <div class="body">${body}</div>
         ${this._popup ? this._renderPopup() : ""}
-        ${this._copy ? this._renderCopy() : ""}
-      </ha-card>`;
+        ${this._copy ? this._renderCopy() : ""}`;
+    // Gleicher Inhalt -> nichts tun (z. B. Antwort auf eigenen Aufruf + Push vom Server)
+    if (html === this._lastHtml && this._card?.isConnected) return;
+    this._lastHtml = html;
+
+    // Karte und Stil nur einmal anlegen: das ha-card-Element bleibt bestehen,
+    // nur sein Inhalt wird ersetzt. So springt die Seite nicht nach oben.
+    if (!this._card || this._card.getRootNode() !== this.shadowRoot) {
+      this.shadowRoot.innerHTML = `<style>${STYLE}</style><ha-card></ha-card>`;
+      this._card = this.shadowRoot.querySelector("ha-card");
+    }
+    const card = this._card;
+    const keep = this._snapshot(card);
+    card.style.minHeight = keep.height ? `${keep.height}px` : "";
+    card.innerHTML = html;
     this._bind();
+    this._restore(card, keep);
+  }
+
+  // Scroll-Positionen, Höhe und Fokus vor dem Neuzeichnen merken ...
+  _snapshot(card) {
+    const scrollers = [];
+    let n = this;
+    while (n) {
+      if (n.scrollTop || n.scrollLeft) scrollers.push([n, n.scrollTop, n.scrollLeft]);
+      n = n.parentNode || n.host;
+    }
+    const inner = [...card.querySelectorAll(".tabs, .chips, .weekwrap, .scroll")].map((el) => el.scrollLeft);
+    const act = this.shadowRoot.activeElement;
+    let focus = null;
+    if (act && act !== card) {
+      focus = act.tagName + [...act.attributes].filter((a) => a.name.startsWith("data-")).map((a) => `[${a.name}="${CSS.escape(a.value)}"]`).join("");
+    }
+    return { x: window.scrollX, y: window.scrollY, scrollers, inner, focus, height: card.offsetHeight };
+  }
+
+  // ... und danach wiederherstellen
+  _restore(card, k) {
+    const apply = () => {
+      for (const [el, top, left] of k.scrollers) { if (el.scrollTop !== top) el.scrollTop = top; if (el.scrollLeft !== left) el.scrollLeft = left; }
+      if (window.scrollY !== k.y || window.scrollX !== k.x) window.scrollTo(k.x, k.y);
+      [...card.querySelectorAll(".tabs, .chips, .weekwrap, .scroll")].forEach((el, i) => { if (k.inner[i]) el.scrollLeft = k.inner[i]; });
+    };
+    if (k.focus) {
+      try { card.querySelector(k.focus)?.focus({ preventScroll: true }); } catch (e) { /* ungültiger Selektor */ }
+    }
+    apply();
+    requestAnimationFrame(() => { apply(); card.style.minHeight = ""; });
   }
 
   _renderMode() {
