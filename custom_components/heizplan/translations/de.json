@@ -7,7 +7,8 @@
         "data": {
           "season_entity": "Heizperiode (aus = Heizplan schreibt nichts)",
           "keep_comfort": "Regler auf Komfort halten",
-          "comfort_preset": "Name der Komfort-Betriebsart"
+          "comfort_preset": "Name der Komfort-Betriebsart",
+          "aux_outside_entity": "Außenfühler fürs Zuheizen mit Klima (optional)"
         }
       }
     },
@@ -23,7 +24,8 @@
         "data": {
           "season_entity": "Heizperiode (aus = Heizplan schreibt nichts)",
           "keep_comfort": "Regler auf Komfort halten",
-          "comfort_preset": "Name der Komfort-Betriebsart"
+          "comfort_preset": "Name der Komfort-Betriebsart",
+          "aux_outside_entity": "Außenfühler fürs Zuheizen mit Klima (optional)"
         }
       }
     }
@@ -108,6 +110,22 @@
         "months": {
           "name": "Aktive Monate",
           "description": "z. B. 10,11,12,1,2,3,4"
+        },
+        "aux_climate": {
+          "name": "Klimagerät (Zuheizen)",
+          "description": "climate-Entität, die bei Bedarf mitheizt; leer = entfernen"
+        },
+        "aux_fan_mode": {
+          "name": "Lüfterstufe beim Zuheizen",
+          "description": "z. B. auto (aus fan_modes des Klimageräts)"
+        },
+        "aux_fan_switch": {
+          "name": "Lüfter-Schalter beim Zuheizen",
+          "description": "switch/input_boolean, wird beim Zuheizen eingeschaltet"
+        },
+        "aux_enabled": {
+          "name": "Zuheizen erlaubt",
+          "description": ""
         }
       }
     },
@@ -146,6 +164,32 @@
         "basis": {
           "name": "Basis",
           "description": "mean = Tagesmittel, max = Höchstwert, min = Tiefstwert"
+        }
+      }
+    },
+    "set_aux": {
+      "name": "Zuheizen einstellen",
+      "description": "Gilt für alle Räume mit Klimagerät.",
+      "fields": {
+        "on_delta": {
+          "name": "Abweichung (K)",
+          "description": "Einschalten ab Soll − Ist ≥ Abweichung"
+        },
+        "off_delta": {
+          "name": "Abschaltabstand (K)",
+          "description": "Ausschalten ab Ist ≥ Soll − Abstand"
+        },
+        "wait": {
+          "name": "Wartezeit (min)",
+          "description": "So lange muss die Einschaltbedingung durchgehend gelten"
+        },
+        "outside_limit": {
+          "name": "Außengrenze (°C)",
+          "description": "Nur zuheizen, wenn außen kälter (mit Außenfühler)"
+        },
+        "takeover": {
+          "name": "Klima übernehmen",
+          "description": "Auch eine von Hand eingeschaltete Klima auf Heizen stellen und später ausschalten"
         }
       }
     }

@@ -7,7 +7,8 @@
         "data": {
           "season_entity": "Heating season entity (off = Heizplan writes nothing)",
           "keep_comfort": "Keep thermostats in comfort preset",
-          "comfort_preset": "Comfort preset name"
+          "comfort_preset": "Comfort preset name",
+          "aux_outside_entity": "Outdoor sensor for auxiliary heating with A/C (optional)"
         }
       }
     },
@@ -23,7 +24,8 @@
         "data": {
           "season_entity": "Heating season entity (off = Heizplan writes nothing)",
           "keep_comfort": "Keep thermostats in comfort preset",
-          "comfort_preset": "Comfort preset name"
+          "comfort_preset": "Comfort preset name",
+          "aux_outside_entity": "Outdoor sensor for auxiliary heating with A/C (optional)"
         }
       }
     }
@@ -108,6 +110,22 @@
         "months": {
           "name": "Aktive Monate",
           "description": "z. B. 10,11,12,1,2,3,4"
+        },
+        "aux_climate": {
+          "name": "A/C for auxiliary heating",
+          "description": "climate entity that helps heating; empty = remove"
+        },
+        "aux_fan_mode": {
+          "name": "Fan mode while heating",
+          "description": "e.g. auto (from the A/C's fan_modes)"
+        },
+        "aux_fan_switch": {
+          "name": "Fan switch while heating",
+          "description": "switch/input_boolean turned on while heating"
+        },
+        "aux_enabled": {
+          "name": "Auxiliary heating allowed",
+          "description": ""
         }
       }
     },
@@ -146,6 +164,32 @@
         "basis": {
           "name": "Basis",
           "description": "mean, max or min daily temperature"
+        }
+      }
+    },
+    "set_aux": {
+      "name": "Configure auxiliary heating",
+      "description": "Applies to all rooms with an A/C.",
+      "fields": {
+        "on_delta": {
+          "name": "Deviation (K)",
+          "description": "Turn on when target − actual ≥ deviation"
+        },
+        "off_delta": {
+          "name": "Turn-off margin (K)",
+          "description": "Turn off when actual ≥ target − margin"
+        },
+        "wait": {
+          "name": "Delay (min)",
+          "description": "Turn-on condition must hold this long"
+        },
+        "outside_limit": {
+          "name": "Outdoor limit (°C)",
+          "description": "Only when colder outside (with outdoor sensor)"
+        },
+        "takeover": {
+          "name": "Take over A/C",
+          "description": "Also switch a manually started A/C to heat and turn it off later"
         }
       }
     }

@@ -1,7 +1,7 @@
 """Konstanten für Heizplan."""
 
 DOMAIN = "heizplan"
-VERSION = "0.3.3"
+VERSION = "0.4.0"
 
 STORAGE_KEY = "heizplan"
 STORAGE_VERSION = 1
@@ -28,6 +28,7 @@ DEFAULT_TEMP = 20.0
 CONF_SEASON_ENTITY = "season_entity"          # z. B. switch.heizperiode – aus = Heizplan schreibt nichts
 CONF_KEEP_COMFORT = "keep_comfort"            # Regler beim Schreiben auf preset 'comfort' halten
 CONF_COMFORT_PRESET = "comfort_preset"
+CONF_AUX_OUTSIDE = "aux_outside_entity"      # Außenfühler fürs Zuheizen mit Klima (optional)
 
 DEFAULT_COMFORT_PRESET = "comfort"
 

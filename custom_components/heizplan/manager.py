@@ -19,6 +19,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_AUX_OUTSIDE,
     CONF_COMFORT_PRESET,
     CONF_KEEP_COMFORT,
     CONF_SEASON_ENTITY,
@@ -45,6 +46,16 @@ from .season import (
     daily_values,
     normalize_season_auto,
     weather_decision,
+)
+from .zuheizen import (
+    DEFAULT_AUX_SETTINGS,
+    HEAT,
+    RUNNING_OFF,
+    can_start,
+    climate_setpoint,
+    conditions,
+    normalize_aux_settings,
+    outside_ok,
 )
 from .plan import (
     DAYS,
@@ -101,6 +112,13 @@ class HeizplanManager:
         self.season_last: dict[str, Any] = {}   # {"decision": bool|None, "date": "YYYY-MM-DD"}
         self.season_status: dict[str, Any] = {}
         self._started_unsub: CALLBACK_TYPE | None = None
+        # Zuheizen mit Klima
+        self.aux_settings: dict[str, Any] = dict(DEFAULT_AUX_SETTINGS)
+        self.aux_state: dict[str, dict[str, Any]] = {}   # je Raum {active, owned, since} (gespeichert)
+        self._aux_demand_since: dict[str, datetime] = {}  # Einschaltbedingung gilt seit (nicht gespeichert)
+        self._aux_blocked: set[str] = set()   # Klima während des Zuheizens von Hand geändert -> Pause bis Bedarf endet
+        self._aux_fresh: set[str] = set()     # nach Neustart noch nicht neu bewertet
+        self._aux_written: dict[str, float] = {}
 
     # ------------------------------------------------------------------ Optionen
     @property
@@ -114,6 +132,10 @@ class HeizplanManager:
     @property
     def comfort_preset(self) -> str:
         return self.entry.options.get(CONF_COMFORT_PRESET) or DEFAULT_COMFORT_PRESET
+
+    @property
+    def aux_outside_entity(self) -> str | None:
+        return self.entry.options.get(CONF_AUX_OUTSIDE) or None
 
     def room_active(self, room: dict[str, Any], now: datetime) -> bool:
         """Raum aktiv? Folgt der Heizperiode (Standard) und/oder festen Monaten."""
@@ -147,6 +169,17 @@ class HeizplanManager:
             _LOGGER.warning("Heizplan: Heizperiode-Automatik zurückgesetzt (%s)", err)
             self.season_auto = dict(DEFAULT_SEASON_AUTO)
         self.season_last = data.get("season_last") or {}
+        try:
+            self.aux_settings = normalize_aux_settings(data.get("aux_settings"))
+        except ValueError as err:
+            _LOGGER.warning("Heizplan: Zuheizen-Einstellungen zurückgesetzt (%s)", err)
+            self.aux_settings = dict(DEFAULT_AUX_SETTINGS)
+        self.aux_state = {
+            rid: {"active": bool(st.get("active")), "owned": bool(st.get("owned")), "since": st.get("since")}
+            for rid, st in (data.get("aux_state") or {}).items() if rid in self.rooms
+        }
+        # Nach dem Neustart neu bewerten; Wartezeit beginnt neu, laufendes Zuheizen nicht blind beenden
+        self._aux_fresh = {rid for rid, st in self.aux_state.items() if st["active"]}
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -157,6 +190,8 @@ class HeizplanManager:
             "away_temp": self.away_temp,
             "season_auto": self.season_auto,
             "season_last": self.season_last,
+            "aux_settings": self.aux_settings,
+            "aux_state": self.aux_state,
         }
 
     @callback
@@ -353,6 +388,7 @@ class HeizplanManager:
             status["target"] = plan_temp
             status["source"] = SOURCE_PLAN
         status["written"] = self._last_written.get(room_id)
+        status["aux_heating"] = self.aux_status(room_id, status, now)
         return status
 
     def full_state(self) -> dict[str, Any]:
@@ -364,6 +400,11 @@ class HeizplanManager:
             "season_active": self.season_active(),
             "season_auto": self.season_auto,
             "season_status": self.season_status,
+            "aux": {
+                "settings": self.aux_settings,
+                "outside_entity": self.aux_outside_entity,
+                "outside_value": self._outside_value(),
+            },
             "rooms": {
                 rid: {**room, "kind": room_kind(room), "status": self.room_status(rid, now)}
                 for rid, room in self.rooms.items()
@@ -399,6 +440,8 @@ class HeizplanManager:
                 self._last_written[room_id] = target
                 self._restore_pending.discard(room_id)
                 changed = True
+        if await self._aux_apply(now):
+            changed = True
         if changed:
             self._schedule_save()
         async_dispatcher_send(self.hass, SIGNAL_UPDATED)
@@ -475,6 +518,144 @@ class HeizplanManager:
             _LOGGER.error("Heizplan: Schreiben auf %s fehlgeschlagen: %s", entity_id, err)
             return False
 
+    # ------------------------------------------------------------------ Zuheizen mit Klima
+    def _outside_value(self) -> float | None:
+        ent = self.aux_outside_entity
+        if not ent:
+            return None
+        state = self.hass.states.get(ent)
+        try:
+            return float(state.state) if state is not None else None
+        except ValueError:
+            return None
+
+    def _aux_conditions(self, room_id: str, status: dict[str, Any]) -> tuple[bool, bool, bool]:
+        """-> (erlaubt, einschalten_gewünscht, ausschalten_nötig)."""
+        room = self.rooms[room_id]
+        enabled = bool(room.get("aux_climate")) and room.get("aux_enabled", True)
+        ok = outside_ok(bool(self.aux_outside_entity), self._outside_value(), self.aux_settings["outside_limit"])
+        target = status["target"] if status.get("source") != SOURCE_INACTIVE else None
+        want_on, must_off = conditions(enabled=enabled, target=target, current=status.get("current_temp"),
+                                       outside_is_ok=ok, settings=self.aux_settings)
+        return enabled, want_on, must_off
+
+    def aux_status(self, room_id: str, status: dict[str, Any], now: datetime) -> dict[str, Any] | None:
+        room = self.rooms[room_id]
+        if not room.get("aux_climate") or room_kind(room) != KIND_CLIMATE:
+            return None
+        enabled, want_on, _ = self._aux_conditions(room_id, status)
+        st = self.aux_state.get(room_id) or {}
+        since = self._aux_demand_since.get(room_id)
+        return {
+            "climate": room["aux_climate"],
+            "enabled": enabled,
+            "demand": want_on,
+            "demand_since": since.isoformat() if since else None,
+            "active": bool(st.get("active")),
+            "since": st.get("since"),
+            "paused": room_id in self._aux_blocked,
+        }
+
+    async def _aux_call(self, domain: str, service: str, data: dict[str, Any]) -> bool:
+        try:
+            await self.hass.services.async_call(domain, service, data, blocking=True)
+            return True
+        except Exception as err:  # noqa: BLE001 – ein Raum soll andere nicht stoppen
+            _LOGGER.error("Heizplan: Zuheizen %s.%s %s fehlgeschlagen: %s", domain, service, data, err)
+            return False
+
+    async def _aux_apply(self, now: datetime) -> bool:
+        """Klimageräte je Raum ein-/ausschalten. True, wenn sich der gespeicherte Zustand änderte."""
+        changed = False
+        wait = timedelta(minutes=self.aux_settings["wait"])
+        takeover = self.aux_settings["takeover"]
+        for room_id, room in list(self.rooms.items()):
+            ent = room.get("aux_climate")
+            if not ent or room_kind(room) != KIND_CLIMATE:
+                if self.aux_state.pop(room_id, None) is not None:
+                    changed = True
+                continue
+            try:
+                status = self.room_status(room_id, now)
+            except (KeyError, PlanError):
+                continue
+            st = self.aux_state.setdefault(room_id, {"active": False, "owned": False, "since": None})
+            klima = self.hass.states.get(ent)
+            hvac = klima.state if klima is not None else None
+            if hvac in (None, "unavailable", "unknown"):
+                continue  # Klima (noch) nicht erreichbar: nichts entscheiden
+            _, want_on, must_off = self._aux_conditions(room_id, status)
+
+            started = dt_util.parse_datetime(st["since"]) if st.get("since") else None
+            settled = started is None or now - started >= timedelta(minutes=2)
+            if st["active"] and hvac != HEAT and settled:
+                # Klima wurde während des Zuheizens von Hand aus- oder umgestellt: Zuheizen beenden.
+                # Direkt nach einem Neustart nur zurücksetzen, sonst Pause, bis der Bedarf endet.
+                # (In den ersten 2 min nach dem Einschalten nicht, bis die Klima ihren Zustand meldet.)
+                if room_id not in self._aux_fresh:
+                    self._aux_blocked.add(room_id)
+                st.update(active=False, owned=False, since=None)
+                self._aux_written.pop(room_id, None)
+                changed = True
+            self._aux_fresh.discard(room_id)
+            if must_off:
+                self._aux_blocked.discard(room_id)
+
+            if want_on:
+                self._aux_demand_since.setdefault(room_id, now)
+            else:
+                self._aux_demand_since.pop(room_id, None)
+
+            if st["active"]:
+                if must_off:
+                    if hvac == HEAT and (takeover or st["owned"]):
+                        await self._aux_call("climate", "set_hvac_mode", {ATTR_ENTITY_ID: ent, "hvac_mode": RUNNING_OFF})
+                        _LOGGER.info("Heizplan: Zuheizen %s aus", ent)
+                    st.update(active=False, owned=False, since=None)
+                    self._aux_written.pop(room_id, None)
+                    changed = True
+                else:
+                    # Soll folgt dem Raum-Soll
+                    value = climate_setpoint(status["target"], dict(klima.attributes))
+                    if self._aux_written.get(room_id) != value:
+                        if await self._aux_call("climate", "set_temperature", {ATTR_ENTITY_ID: ent, "temperature": value}):
+                            self._aux_written[room_id] = value
+                continue
+
+            since = self._aux_demand_since.get(room_id)
+            if (want_on and since is not None and now - since >= wait
+                    and room_id not in self._aux_blocked and can_start(hvac, takeover)):
+                value = climate_setpoint(status["target"], dict(klima.attributes))
+                if await self._aux_call("climate", "set_temperature",
+                                        {ATTR_ENTITY_ID: ent, "hvac_mode": HEAT, "temperature": value}):
+                    self._aux_written[room_id] = value
+                    st.update(active=True, owned=hvac != HEAT, since=now.isoformat())
+                    changed = True
+                    _LOGGER.info("Heizplan: Zuheizen %s an (%s °C)", ent, value)
+                    await self._aux_fan(room, klima)
+        return changed
+
+    async def _aux_fan(self, room: dict[str, Any], klima) -> None:
+        fan_mode = room.get("aux_fan_mode")
+        if fan_mode:
+            modes = klima.attributes.get("fan_modes") or []
+            if fan_mode in modes:
+                await self._aux_call("climate", "set_fan_mode",
+                                     {ATTR_ENTITY_ID: room["aux_climate"], "fan_mode": fan_mode})
+            else:
+                _LOGGER.warning("Heizplan: Lüfterstufe %s gibt es bei %s nicht (%s)", fan_mode, room["aux_climate"], modes)
+        fan_switch = room.get("aux_fan_switch")
+        if fan_switch:
+            await self._aux_call(fan_switch.split(".", 1)[0], "turn_on", {ATTR_ENTITY_ID: fan_switch})
+
+    async def async_set_aux_settings(self, cfg: dict[str, Any]) -> None:
+        self.aux_settings = normalize_aux_settings({**self.aux_settings, **cfg})
+        await self._changed()
+
+    async def async_set_aux_enabled(self, room_id: str, enabled: bool) -> None:
+        self.rooms[room_id]["aux_enabled"] = bool(enabled)
+        await self._changed()
+
     # ------------------------------------------------------------------ Änderungen
     async def async_flush(self) -> None:
         await self._store.async_save(self.as_dict())
@@ -507,8 +688,11 @@ class HeizplanManager:
 
     async def async_update_room(self, room_id: str, name: str | None = None,
                                 valve: str | None = None, follow_season: bool | None = None,
-                                months: list[int] | None = None) -> None:
+                                months: list[int] | None = None, aux_climate: str | None = None,
+                                aux_fan_mode: str | None = None, aux_fan_switch: str | None = None,
+                                aux_enabled: bool | None = None) -> None:
         room = self.rooms[room_id]
+        had_aux = bool(room.get("aux_climate"))
         if name is not None:
             room["name"] = name
         if valve is not None:
@@ -517,12 +701,27 @@ class HeizplanManager:
             room["follow_season"] = bool(follow_season)
         if months is not None:
             room["months"] = [int(m) for m in months if 1 <= int(m) <= 12] or None
-        await self._changed()
+        if aux_climate is not None:
+            if aux_climate and not aux_climate.startswith("climate."):
+                raise PlanError("Zuheizen: Klimagerät muss climate.* sein")
+            if aux_climate and room_kind(room) != KIND_CLIMATE:
+                raise PlanError("Zuheizen geht nur für Heizkörper-Räume")
+            room["aux_climate"] = aux_climate or None
+        if aux_fan_mode is not None:
+            room["aux_fan_mode"] = aux_fan_mode or None
+        if aux_fan_switch is not None:
+            if aux_fan_switch and aux_fan_switch.split(".", 1)[0] not in ("switch", "input_boolean"):
+                raise PlanError("Lüfter-Schalter muss switch.* oder input_boolean.* sein")
+            room["aux_fan_switch"] = aux_fan_switch or None
+        if aux_enabled is not None:
+            room["aux_enabled"] = bool(aux_enabled)
+        await self._changed(rooms_changed=had_aux != bool(room.get("aux_climate")))
 
     async def async_remove_room(self, room_id: str) -> None:
         self.rooms.pop(room_id)
         self.overrides.pop(room_id, None)
         self._last_written.pop(room_id, None)
+        self.aux_state.pop(room_id, None)
         await self._changed(rooms_changed=True)
 
     async def async_set_plan(self, room_id: str, plan: dict[str, Any]) -> None:

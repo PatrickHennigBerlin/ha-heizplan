@@ -23,7 +23,7 @@ from .websocket import async_register_websocket
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = [Platform.SENSOR, Platform.SELECT, Platform.NUMBER]
+PLATFORMS = [Platform.SENSOR, Platform.SELECT, Platform.NUMBER, Platform.SWITCH, Platform.BINARY_SENSOR]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -159,11 +159,18 @@ def _register_services(hass: HomeAssistant) -> None:
 
     async def update_room(call: ServiceCall) -> None:
         manager = get_manager(hass)
-        await manager.async_update_room(
-            _resolve_room(manager, call.data["room"]),
-            call.data.get("name"), call.data.get("valve"),
-            call.data.get("follow_season"), call.data.get("months"),
-        )
+        try:
+            await manager.async_update_room(
+                _resolve_room(manager, call.data["room"]),
+                call.data.get("name"), call.data.get("valve"),
+                call.data.get("follow_season"), call.data.get("months"),
+                aux_climate=call.data.get("aux_climate"),
+                aux_fan_mode=call.data.get("aux_fan_mode"),
+                aux_fan_switch=call.data.get("aux_fan_switch"),
+                aux_enabled=call.data.get("aux_enabled"),
+            )
+        except PlanError as err:
+            raise ServiceValidationError(str(err)) from err
 
     async def import_scheduler(call: ServiceCall) -> dict:
         try:
@@ -203,6 +210,32 @@ def _register_services(hass: HomeAssistant) -> None:
                 vol.Optional("valve"): cv.string,
                 vol.Optional("follow_season"): cv.boolean,
                 vol.Optional("months"): [vol.All(vol.Coerce(int), vol.Range(1, 12))],
+                # Zuheizen mit Klima ("" = entfernen)
+                vol.Optional("aux_climate"): vol.Any(cv.entity_id, ""),
+                vol.Optional("aux_fan_mode"): cv.string,
+                vol.Optional("aux_fan_switch"): vol.Any(cv.entity_id, ""),
+                vol.Optional("aux_enabled"): cv.boolean,
+            }
+        ),
+    )
+
+    async def set_aux(call: ServiceCall) -> None:
+        try:
+            await get_manager(hass).async_set_aux_settings(dict(call.data))
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+
+    hass.services.async_register(
+        DOMAIN,
+        "set_aux",
+        set_aux,
+        schema=vol.Schema(
+            {
+                vol.Optional("on_delta"): vol.Coerce(float),
+                vol.Optional("off_delta"): vol.Coerce(float),
+                vol.Optional("wait"): vol.Coerce(int),
+                vol.Optional("outside_limit"): vol.Coerce(float),
+                vol.Optional("takeover"): cv.boolean,
             }
         ),
     )

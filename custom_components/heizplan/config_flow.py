@@ -11,6 +11,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_AUX_OUTSIDE,
     CONF_COMFORT_PRESET,
     CONF_KEEP_COMFORT,
     CONF_SEASON_ENTITY,
@@ -21,6 +22,7 @@ from .const import (
 
 def _schema(defaults: dict[str, Any]) -> vol.Schema:
     season = defaults.get(CONF_SEASON_ENTITY)
+    outside = defaults.get(CONF_AUX_OUTSIDE)
     return vol.Schema(
         {
             vol.Optional(
@@ -36,6 +38,12 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_COMFORT_PRESET,
                 default=defaults.get(CONF_COMFORT_PRESET, DEFAULT_COMFORT_PRESET),
             ): selector.TextSelector(),
+            vol.Optional(
+                CONF_AUX_OUTSIDE,
+                description={"suggested_value": outside} if outside else None,
+            ): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["sensor"], device_class="temperature")
+            ),
         }
     )
 

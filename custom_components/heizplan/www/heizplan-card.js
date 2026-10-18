@@ -2,7 +2,7 @@
  * Heizplan-Karte – Übersicht, Wochenplan-Editor (je Raum oder alle Räume), Vorlagen
  * gehört zur Integration custom_components/heizplan (wird von ihr ausgeliefert).
  */
-const HP_VERSION = "0.3.3";
+const HP_VERSION = "0.4.0";
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABEL = { mon: "Mo", tue: "Di", wed: "Mi", thu: "Do", fri: "Fr", sat: "Sa", sun: "So" };
 const DAY_LONG = { mon: "Montag", tue: "Dienstag", wed: "Mittwoch", thu: "Donnerstag", fri: "Freitag", sat: "Samstag", sun: "Sonntag" };
@@ -242,6 +242,15 @@ class HeizplanCard extends HTMLElement {
       </div>`;
   }
 
+  _auxIcon(s) {
+    const a = s.aux_heating;
+    if (!a) return "";
+    if (a.active) return `<span class="aux on" title="Klima heizt mit"><ha-icon icon="mdi:air-conditioner"></ha-icon>Klima</span>`;
+    if (a.paused) return `<span class="aux" title="Klima von Hand geändert – Zuheizen pausiert">Klima pausiert</span>`;
+    if (a.demand && a.enabled) return `<span class="aux wait" title="Zu kalt – Klima startet nach der Wartezeit">Klima bald</span>`;
+    return "";
+  }
+
   _miniBar(blocks, nowMin) {
     return `<div class="bar small">
       ${blocks.map((b) => `<div class="blk" style="left:${b.start / 14.4}%;width:${(b.end - b.start) / 14.4}%;background:${valueColor(b.value)}"></div>`).join("")}
@@ -277,7 +286,7 @@ class HeizplanCard extends HTMLElement {
         <div class="tile ${sw ? "switch" : ""}">
           <div class="trow">
             <button class="name link" data-open="${r.id}" title="Wochenplan öffnen">${esc(r.name)}</button>
-            <span class="badge ${s.source}">${esc(srcText)}</span>
+            <span class="tright">${this._auxIcon(s)}<span class="badge ${s.source}">${esc(srcText)}</span></span>
           </div>
           <div class="temps">
             <div><div class="lbl">Ist</div><div class="big ${state}" data-ist="${r.id}">${istHtml}</div></div>
@@ -744,6 +753,11 @@ const STYLE = `
   .trow { display:flex; justify-content:space-between; align-items:center; gap:8px; }
   .name { font-weight:600; font-size:1.05em; }
   .link { border:none; background:none; padding:0; color:var(--primary-text-color); cursor:pointer; font:inherit; font-weight:600; text-align:left; }
+  .tright { display:flex; gap:6px; align-items:center; min-width:0; }
+  .aux { font-size:.72em; padding:2px 7px; border-radius:10px; white-space:nowrap; background: rgba(127,127,127,.15); display:inline-flex; align-items:center; gap:3px; }
+  .aux.on { background: rgba(232,89,12,.18); color:#c2410c; font-weight:600; }
+  .aux.wait { background: rgba(3,169,244,.15); }
+  .aux ha-icon { --mdc-icon-size:14px; width:14px; height:14px; }
   .badge { font-size:.75em; padding:2px 8px; border-radius:10px; background: rgba(127,127,127,.15); white-space:nowrap; }
   .badge.override { background: rgba(255,152,0,.25); }
   .badge.away { background: rgba(33,150,243,.2); }

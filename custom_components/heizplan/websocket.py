@@ -192,6 +192,10 @@ async def ws_add_room(hass, manager, msg):
         vol.Optional("valve"): vol.Any(str, None),
         vol.Optional("follow_season"): vol.Any(bool, None),
         vol.Optional("months"): vol.Any([vol.Coerce(int)], None),
+        vol.Optional("aux_climate"): vol.Any(str, None),
+        vol.Optional("aux_fan_mode"): vol.Any(str, None),
+        vol.Optional("aux_fan_switch"): vol.Any(str, None),
+        vol.Optional("aux_enabled"): vol.Any(bool, None),
     }
 )
 @websocket_api.require_admin
@@ -199,8 +203,27 @@ async def ws_add_room(hass, manager, msg):
 @_wrap
 async def ws_update_room(hass, manager, msg):
     await manager.async_update_room(
-        msg["room_id"], msg.get("name"), msg.get("valve"), msg.get("follow_season"), msg.get("months")
+        msg["room_id"], msg.get("name"), msg.get("valve"), msg.get("follow_season"), msg.get("months"),
+        aux_climate=msg.get("aux_climate"), aux_fan_mode=msg.get("aux_fan_mode"),
+        aux_fan_switch=msg.get("aux_fan_switch"), aux_enabled=msg.get("aux_enabled"),
     )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "heizplan/set_aux",
+        vol.Optional("on_delta"): vol.Coerce(float),
+        vol.Optional("off_delta"): vol.Coerce(float),
+        vol.Optional("wait"): vol.Coerce(int),
+        vol.Optional("outside_limit"): vol.Coerce(float),
+        vol.Optional("takeover"): bool,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+@_wrap
+async def ws_set_aux(hass, manager, msg):
+    await manager.async_set_aux_settings({k: v for k, v in msg.items() if k not in ("type", "id")})
 
 
 @websocket_api.websocket_command(
@@ -257,6 +280,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
         ws_apply_template,
         ws_add_room,
         ws_update_room,
+        ws_set_aux,
         ws_remove_room,
         ws_set_season_auto,
         ws_season_check,

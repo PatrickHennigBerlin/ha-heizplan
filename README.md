@@ -52,6 +52,8 @@ hide_tabs: false
 | `heizplan.clear_override` | Raum zurück auf den Plan |
 | `heizplan.update_room` | Name, Ventil-Sensor, `follow_season`, aktive `months` (z. B. Fußbodenheizung nur Okt–Apr) |
 | `heizplan.set_season_auto` | Heizperiode-Automatik: `mode` (`manual`/`dates`/`weather`), `on_date`/`off_date` (TT.MM), `weather_entity`, `on_below`, `off_above`, `days`, `basis` (`mean`/`max`/`min`) |
+| `heizplan.update_room` (Zuheizen) | `aux_climate` (climate-Entität), `aux_fan_mode` **oder** `aux_fan_switch`, `aux_enabled` – leerer Text entfernt |
+| `heizplan.set_aux` | Zuheizen global: `on_delta`, `off_delta`, `wait`, `outside_limit`, `takeover` |
 | `heizplan.import_scheduler` | `switch.schedule_*` übernehmen (`climate.set_temperature` und `switch.turn_on/off`; `workday` = Mo–Fr) |
 
 Beispiel „Außer Haus“: `heizplan.set_mode` mit `mode: away`; bei Rückkehr `mode: plan`.
@@ -65,6 +67,48 @@ Beispiel „Außer Haus“: `heizplan.set_mode` mit `mode: away`; bei Rückkehr 
 - Ist die Heizperiode aus (Raum inaktiv), wird nichts korrigiert – Frostschutz im Sommer bleibt.
 - Beim **Start von Home Assistant** und beim **Einschalten der Heizperiode** werden alle Regler sofort auf Komfort gestellt.
 - Werte werden auf `min_temp`/`max_temp` der climate-Entity begrenzt.
+
+## Zuheizen mit Klima
+
+Hat ein Raum zusätzlich ein Klimagerät (climate-Entität mit `heat`), kann Heizplan es mitheizen lassen,
+wenn die Heizung allein den Soll nicht schafft. Einrichten je Raum mit `heizplan.update_room`:
+
+```yaml
+action: heizplan.update_room
+data:
+  room: climate.wohnzimmer_heizung
+  aux_climate: climate.klima_wohnzimmer
+  aux_fan_mode: auto            # Lüfterstufe aus fan_modes – oder:
+  # aux_fan_switch: switch.lufter_auto_wohnzimmer
+```
+
+- **Ein**, wenn *durchgehend für die Wartezeit* (Standard 10 min) gilt: Raum aktiv (Heizperiode, Modus nicht Aus),
+  Zuheizen für den Raum erlaubt, **Soll − Ist ≥ Abweichung** (Standard 1,5 K) und – falls ein Außenfühler
+  eingestellt ist – außen kälter als die **Außengrenze** (Standard 10 °C). Ist der Außenfühler nicht verfügbar,
+  wird nicht zugeheizt.
+- Dann: `climate.set_temperature` mit `hvac_mode: heat` und dem Raum-Soll (auf `min_temp`/`max_temp` und
+  `target_temp_step` des Klimageräts gebracht), danach Lüfterstufe bzw. Lüfter-Schalter.
+- **Aus**, sobald **Ist ≥ Soll − Abschaltabstand** (Standard 0,5 K) oder eine Einschaltbedingung wegfällt –
+  nur, wenn die Klima gerade auf `heat` steht. Dazwischen bleibt der Zustand (Hysterese).
+- **Soll folgt:** Ändert sich der Raum-Soll (Plan, Override, Abwesend), wird der Klima-Soll nachgezogen.
+- **Klima übernehmen** (Standard an): Auch eine laufende Klima (z. B. Kühlen/Lüften) wird bei Bedarf auf Heizen
+  gestellt und später ausgeschaltet. Aus: nur einschalten, wenn die Klima aus ist, und nur ausschalten, was
+  Heizplan selbst eingeschaltet hat.
+- Wird die Klima während des Zuheizens von Hand aus- oder umgestellt, pausiert das Zuheizen für den Raum,
+  bis es wieder warm genug ist.
+- Nach einem Neustart wird neu bewertet; die Wartezeit beginnt neu, laufendes Zuheizen wird nicht blind beendet.
+
+Entitäten: `number.heizplan_zuheizen_abweichung`, `…_abschaltabstand`, `…_wartezeit`, `…_aussengrenze`,
+`switch.heizplan_zuheizen_klima_ubernehmen`, je Raum `switch.heizplan_zuheizen_<raum>` (erlauben) und
+`binary_sensor.heizplan_zuheizen_<raum>` (aktiv). Den Außenfühler wählt man in den Optionen der Integration.
+Die Karte zeigt „Klima“ am Raum, solange mitgeheizt wird.
+
+### Auxiliary heating with an A/C (English)
+
+Assign an A/C (`aux_climate`) to a room. It is switched to `heat` with the room target when
+target − actual ≥ deviation for the delay time (and outdoor < limit, if an outdoor sensor is configured),
+and switched off at actual ≥ target − margin. Settings are entities of the integration; the outdoor
+sensor is set in the integration options.
 
 ## Entwicklung
 
