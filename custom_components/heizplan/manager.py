@@ -683,17 +683,18 @@ class HeizplanManager:
 
     async def _aux_start(self, room_id: str, ent: str, value: float, owned: bool) -> None:
         try:
-            ok = await async_start_climate(self.hass, ent, HEAT, value, self._aux_call)
+            room = self.rooms.get(room_id) or {}
+            ok = await async_start_climate(self.hass, ent, HEAT, value, self._aux_call,
+                                           fan_auto_switch=room.get("aux_fan_switch") or None)
             st = self.aux_state.setdefault(room_id, {"active": False, "owned": False, "since": None})
             if ok:
                 self._aux_start_failed.pop(room_id, None)
                 self._aux_written[room_id] = value
                 st.update(active=True, owned=owned, since=dt_util.now().isoformat(), by_boost=bool(st.get("boost")))
                 _LOGGER.info("Heizplan: Zuheizen %s an (%s °C)", ent, value)
-                room = self.rooms.get(room_id)
                 klima = self.hass.states.get(ent)
-                if room is not None and klima is not None:
-                    await self._aux_fan(room, klima)
+                if room.get("aux_fan_mode") and klima is not None:
+                    await self._aux_fan({**room, "aux_fan_switch": None}, klima)   # Lüfter-Schalter schon gesetzt
             else:
                 self._aux_start_failed[room_id] = dt_util.now()
                 _LOGGER.warning("Heizplan: Zuheizen %s – Klima hat das Einschalten nicht bestätigt, "

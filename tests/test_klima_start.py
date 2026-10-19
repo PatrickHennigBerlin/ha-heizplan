@@ -22,7 +22,7 @@ def order(hass):
         hass.services.async_register(domain, service, handler)
 
     for d, s in (("climate", "turn_on"), ("climate", "set_hvac_mode"), ("climate", "set_temperature"),
-                 ("knx", "read"), ("homeassistant", "update_entity")):
+                 ("knx", "read"), ("homeassistant", "update_entity"), ("switch", "turn_on")):
         mock(d, s)
     return seq
 
@@ -75,3 +75,13 @@ async def test_knx_liest_status_und_wiederholt(hass, order, monkeypatch):
     names = [s for s, _ in order]
     assert names == ["climate.turn_on", "knx.read"] * 3 + ["homeassistant.update_entity"]
     assert order[1][1]["address"] == ["3/0/7"] or order[1][1]["address"] == "3/0/7"
+
+
+async def test_luefter_auto_zum_schluss(hass, order):
+    hass.states.async_set(ENT, "off", {"supported_features": 393})
+    ok = await klima_start.async_start_climate(hass, ENT, "heat", 23, await _call(hass),
+                                               fan_auto_switch="switch.lufter_auto_kuche")
+    assert ok
+    assert [s for s, _ in order] == ["climate.turn_on", "climate.set_hvac_mode", "climate.set_temperature",
+                                     "switch.turn_on"]
+    assert order[-1][1]["entity_id"] == "switch.lufter_auto_kuche"

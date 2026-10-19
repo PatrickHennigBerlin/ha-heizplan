@@ -9,6 +9,7 @@ zuerst den Modus und erst danach EIN. Deshalb hier:
    Status-Adresse lesen; bleibt die Bestätigung aus, EIN wiederholen (höchstens ATTEMPTS-mal)
 3. climate.set_hvac_mode  (Modus) – ebenso bestätigen lassen, wenn die Status-Adresse bekannt ist
 4. climate.set_temperature (Soll)
+5. Lüfter auf Auto (Schalter „Lüfter Auto“, falls angegeben) – ebenso bestätigt über dessen Status-Adresse
 
 Die Status-Adressen kommen aus der KNX-Klima-Entität selbst. Ist das Gerät keine KNX-Klima (oder die Adressen
 sind nicht zu ermitteln), wird ohne Bestätigung in derselben Reihenfolge geschaltet.
@@ -52,6 +53,20 @@ def knx_state_addresses(hass: HomeAssistant, entity_id: str) -> tuple[str | None
     except Exception:  # noqa: BLE001 – Interna können sich ändern: dann ohne Bestätigung
         _LOGGER.debug("Klima-Start: Status-Adressen von %s nicht ermittelbar", entity_id, exc_info=True)
         return None, None
+
+
+def knx_switch_state_address(hass: HomeAssistant, entity_id: str) -> str | None:
+    """Status-GA eines KNX-Schalters, sonst None."""
+    try:
+        comp = hass.data.get("entity_components", {}).get(entity_id.split(".", 1)[0])
+        entity = comp.get_entity(entity_id) if comp is not None else None
+        if entity is None or getattr(entity, "platform", None) is None or entity.platform.platform_name != "knx":
+            return None
+        ga = getattr(getattr(entity._device, "switch", None), "group_address_state", None)  # noqa: SLF001
+        return str(ga) if ga else None
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("Klima-Start: Status-Adresse von %s nicht ermittelbar", entity_id, exc_info=True)
+        return None
 
 
 def _payload_int(payload: Any) -> int | None:
@@ -107,8 +122,8 @@ async def _confirm(hass: HomeAssistant, ga: str, expected: int, send: Callable[[
 
 
 async def async_start_climate(hass: HomeAssistant, entity_id: str, hvac_mode: str, temperature: float,
-                              call: Call) -> bool:
-    """Klima einschalten: EIN (bestätigt) → Modus (bestätigt) → Soll. True, wenn alles durchging."""
+                              call: Call, fan_auto_switch: str | None = None) -> bool:
+    """Klima einschalten: EIN (bestätigt) → Modus (bestätigt) → Soll → Lüfter Auto. True, wenn Ein/Modus/Soll durchgingen."""
     on_ga, mode_ga = knx_state_addresses(hass, entity_id)
     data = {ATTR_ENTITY_ID: entity_id}
 
@@ -139,4 +154,19 @@ async def async_start_climate(hass: HomeAssistant, entity_id: str, hvac_mode: st
     elif not await _mode():
         return False
 
-    return await call("climate", "set_temperature", {**data, "temperature": temperature})
+    if not await call("climate", "set_temperature", {**data, "temperature": temperature}):
+        return False
+
+    if fan_auto_switch:
+        fan_data = {ATTR_ENTITY_ID: fan_auto_switch}
+
+        async def _fan() -> bool:
+            return await call(fan_auto_switch.split(".", 1)[0], "turn_on", fan_data)
+
+        fan_ga = knx_switch_state_address(hass, fan_auto_switch)
+        if fan_ga:
+            if not await _confirm(hass, fan_ga, 1, _fan, call, f"{fan_auto_switch} Lüfter Auto"):
+                _LOGGER.warning("Klima-Start: %s – Lüfter Auto nicht bestätigt", entity_id)
+        else:
+            await _fan()
+    return True
