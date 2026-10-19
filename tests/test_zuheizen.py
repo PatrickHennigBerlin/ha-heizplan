@@ -326,9 +326,12 @@ async def test_restart_keeps_running(hass, clock):
     await hass.async_block_till_done()
     n = len(env.klima_calls("set_temperature"))
     await env.at(13)
+    # die ersten 2 min nach dem Start zählt „aus“ nicht (KNX-Klima meldet erst nach dem Lesen ihren Zustand)
+    assert env.manager.aux_state["lounge"]["active"] is True
+    await env.at(15)
     assert env.manager.aux_state["lounge"]["active"] is False
     assert env.manager.room_status("lounge")["aux_heating"]["paused"] is False
-    await env.at(23)
+    await env.at(25)
     assert len(env.klima_calls("set_temperature")) == n + 1
 
 
@@ -404,3 +407,25 @@ async def test_boost_survives_unavailable_season(hass, clock):
     hass.states.async_set("switch.heizperiode", "on")
     await env.at(2)
     assert env.manager.aux_state["lounge"]["boost"] is True
+
+
+async def test_boost_ueberlebt_neustart_mit_falschem_aus(hass, clock):
+    """Nach dem Neustart zeigt die KNX-Klima kurz „aus“: Boost nicht loslassen, danach normal beenden."""
+    env = await _setup(hass, clock)
+    env.ist(20.0)
+    await hass.services.async_call("heizplan", "boost", {"room": "lounge"}, blocking=True)
+    await hass.async_block_till_done()
+    env.klima("heat", temperature=22)
+    await env.at(5)
+    await env.manager.async_flush()
+    env.klima("off")                   # Neustart: Status noch nicht gelesen
+    env.ist(22.0)                      # Soll inzwischen erreicht
+    assert await hass.config_entries.async_reload(env.entry.entry_id)
+    await hass.async_block_till_done()
+    await env.at(6)
+    assert env.manager.aux_state["lounge"]["active"] is True
+    env.klima("heat", temperature=22)  # Gerät meldet: läuft
+    n = len(env.klima_calls("off"))
+    await env.at(7)
+    assert len(env.klima_calls("off")) == n + 1          # Boost zu Ende -> Klima aus
+    assert env.manager.aux_state["lounge"]["active"] is False

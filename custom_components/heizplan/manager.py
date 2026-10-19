@@ -74,6 +74,7 @@ from .plan import (
 
 _LOGGER = logging.getLogger(__name__)
 START_RETRY = timedelta(minutes=5)   # nach unbestätigtem Einschalten so lange warten
+STARTUP_GRACE = timedelta(minutes=2)   # nach dem Start: KNX-Klimas zeigen „aus“, bis ihr Status gelesen ist
 
 
 def room_id_from_entity(entity_id: str) -> str:
@@ -122,6 +123,7 @@ class HeizplanManager:
         self._aux_blocked: set[str] = set()   # Klima während des Zuheizens von Hand geändert -> Pause bis Bedarf endet
         self._aux_fresh: set[str] = set()     # nach Neustart noch nicht neu bewertet
         self._aux_starting: set[str] = set()  # Klima wird gerade eingeschaltet (klima_start)
+        self._loaded_at: datetime = dt_util.now()
         self._aux_start_failed: dict[str, datetime] = {}  # Einschalten nicht bestätigt -> START_RETRY warten
         self._aux_written: dict[str, float] = {}
 
@@ -160,6 +162,7 @@ class HeizplanManager:
 
     # ------------------------------------------------------------------ Speicher
     async def async_load(self) -> None:
+        self._loaded_at = dt_util.now()
         data = await self._store.async_load() or {}
         self.rooms = data.get("rooms", {})
         self.templates = data.get("templates", {})
@@ -610,6 +613,8 @@ class HeizplanManager:
             hvac = klima.state if klima is not None else None
             if hvac in (None, "unavailable", "unknown") or self._boost_uncertain(room):
                 continue  # Klima, Heizperiode oder Thermostat (noch) nicht erreichbar (z. B. Neustart): nichts entscheiden
+            if st.get("active") and hvac != HEAT and now - self._loaded_at < STARTUP_GRACE:
+                continue  # direkt nach dem Start meldet die Klima ggf. noch „aus“ (Status nicht gelesen): abwarten
             _, want_on, must_off = self._aux_conditions(room_id, status)
 
             # Boost: von Hand angefordert – heizt ohne Wartezeit/Abweichung/Außengrenze bis Ist ≥ Soll
