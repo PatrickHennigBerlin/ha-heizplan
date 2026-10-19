@@ -60,4 +60,6 @@ class HeizplanAuxActive(HeizplanEntity, BinarySensorEntity):
             "bedarf_seit": aux.get("demand_since"),
             "aktiv_seit": aux.get("since"),
             "pausiert": aux.get("paused"),
+            "boost": aux.get("boost"),
+            "quelle": "Boost" if aux.get("boost") else ("Zuheizen" if aux.get("active") else None),
         }

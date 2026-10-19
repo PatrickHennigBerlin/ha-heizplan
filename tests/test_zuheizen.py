@@ -389,3 +389,4 @@ async def test_boost_cancel_and_max_duration(hass, clock):
     await env.at(31)
     assert len(env.klima_calls("off")) == n + 1
     assert env.manager.aux_state["lounge"]["boost"] is False
+
