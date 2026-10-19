@@ -346,7 +346,7 @@ async def test_boost_runs_until_setpoint(hass, clock):
     env.ist(21.5)                      # nur 0,5 K zu kalt: normales Zuheizen würde nicht starten
     await env.at(0)
     assert not env.klima_calls("set_temperature")
-    sw = "switch.heizplan_boost_mit_klima_wohnzimmer"
+    sw = "switch.heizplan_boost_mit_warmepumpe_wohnzimmer"
     assert hass.states.get(sw).state == "off"
     # switch.turn_on ist im Test gemockt (Lüfter-Schalter) -> Entität direkt schalten
     ent = next(e for e in hass.data["entity_components"]["switch"].entities if e.entity_id == sw)
