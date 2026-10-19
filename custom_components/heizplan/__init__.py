@@ -219,6 +219,18 @@ def _register_services(hass: HomeAssistant) -> None:
         ),
     )
 
+    async def boost(call: ServiceCall) -> None:
+        manager = get_manager(hass)
+        try:
+            await manager.async_set_boost(_resolve_room(manager, call.data["room"]), call.data.get("on", True))
+        except PlanError as err:
+            raise ServiceValidationError(str(err)) from err
+
+    hass.services.async_register(
+        DOMAIN, "boost", boost,
+        schema=vol.Schema({vol.Required("room"): cv.string, vol.Optional("on", default=True): cv.boolean}),
+    )
+
     async def set_aux(call: ServiceCall) -> None:
         try:
             await get_manager(hass).async_set_aux_settings(dict(call.data))
@@ -236,6 +248,7 @@ def _register_services(hass: HomeAssistant) -> None:
                 vol.Optional("wait"): vol.Coerce(int),
                 vol.Optional("outside_limit"): vol.Coerce(float),
                 vol.Optional("takeover"): cv.boolean,
+                vol.Optional("boost_max"): vol.Coerce(int),
             }
         ),
     )

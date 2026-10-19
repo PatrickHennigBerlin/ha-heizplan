@@ -190,6 +190,24 @@
         "takeover": {
           "name": "Klima übernehmen",
           "description": "Auch eine von Hand eingeschaltete Klima auf Heizen stellen und später ausschalten"
+        },
+        "boost_max": {
+          "name": "Boost-Höchstdauer",
+          "description": "Minuten"
+        }
+      }
+    },
+    "boost": {
+      "name": "Boost mit Klima",
+      "description": "Klima heizt den Raum mit, bis der Soll erreicht ist (höchstens Boost-Höchstdauer).",
+      "fields": {
+        "room": {
+          "name": "Raum",
+          "description": "Raum-ID, Name oder climate-Entität"
+        },
+        "on": {
+          "name": "An",
+          "description": "aus = Boost abbrechen"
         }
       }
     }

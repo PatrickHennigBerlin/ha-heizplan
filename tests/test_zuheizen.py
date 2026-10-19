@@ -327,3 +327,62 @@ async def test_restart_keeps_running(hass, clock):
     assert env.manager.room_status("lounge")["aux_heating"]["paused"] is False
     await env.at(23)
     assert len(env.klima_calls("set_temperature")) == n + 1
+
+
+# ------------------------------------------------------------------ Boost mit Klima
+def test_boost_conditions():
+    from custom_components.heizplan.zuheizen import boost_conditions
+    assert boost_conditions(target=22, current=21.9) == (True, False)
+    assert boost_conditions(target=22, current=22) == (False, True)
+    assert boost_conditions(target=None, current=18) == (False, True)
+    assert boost_conditions(target=22, current=None) == (False, False)
+
+
+async def test_boost_runs_until_setpoint(hass, clock):
+    env = await _setup(hass, clock)
+    env.ist(21.5)                      # nur 0,5 K zu kalt: normales Zuheizen würde nicht starten
+    await env.at(0)
+    assert not env.klima_calls("set_temperature")
+    sw = "switch.heizplan_boost_mit_klima_wohnzimmer"
+    assert hass.states.get(sw).state == "off"
+    # switch.turn_on ist im Test gemockt (Lüfter-Schalter) -> Entität direkt schalten
+    ent = next(e for e in hass.data["entity_components"]["switch"].entities if e.entity_id == sw)
+    await ent.async_turn_on()
+    await hass.async_block_till_done()
+    on = env.klima_calls("set_temperature")
+    assert on and on[-1].data == {"entity_id": "climate.klima_wz", "hvac_mode": "heat", "temperature": 22.0}
+    assert hass.states.get(sw).state == "on"
+    env.klima("heat", temperature=22)
+    env.ist(21.8)
+    await env.at(10)
+    assert not env.klima_calls("set_hvac_mode")
+    env.ist(22.0)                      # Soll erreicht -> Klima aus, Boost aus
+    await env.at(11)
+    off = env.klima_calls("set_hvac_mode")
+    assert off and off[-1].data == {"entity_id": "climate.klima_wz", "hvac_mode": "off"}
+    assert hass.states.get(sw).state == "off"
+
+
+async def test_boost_cancel_and_max_duration(hass, clock):
+    env = await _setup(hass, clock)
+    env.ist(20.0)
+    await hass.services.async_call("heizplan", "boost", {"room": "lounge"}, blocking=True)
+    await hass.async_block_till_done()
+    assert env.klima_calls("set_temperature")
+    env.klima("heat", temperature=22)
+    # abbrechen: Klima aus, obwohl noch kalt (normales Zuheizen läuft erst nach der Wartezeit)
+    env.ist(21.0)
+    await hass.services.async_call("heizplan", "boost", {"room": "lounge", "on": False}, blocking=True)
+    await hass.async_block_till_done()
+    assert env.klima_calls("set_hvac_mode")[-1].data["hvac_mode"] == "off"
+    # Höchstdauer
+    env.klima("off")
+    await hass.services.async_call("heizplan", "set_aux", {"boost_max": 30}, blocking=True)
+    await hass.services.async_call("heizplan", "boost", {"room": "lounge"}, blocking=True)
+    await hass.async_block_till_done()
+    env.klima("heat", temperature=22)
+    env.ist(21.9)
+    n = len(env.klima_calls("set_hvac_mode"))
+    await env.at(31)
+    assert len(env.klima_calls("set_hvac_mode")) == n + 1
+    assert env.manager.aux_state["lounge"]["boost"] is False

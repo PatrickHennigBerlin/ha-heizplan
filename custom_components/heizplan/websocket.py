@@ -217,6 +217,7 @@ async def ws_update_room(hass, manager, msg):
         vol.Optional("wait"): vol.Coerce(int),
         vol.Optional("outside_limit"): vol.Coerce(float),
         vol.Optional("takeover"): bool,
+        vol.Optional("boost_max"): vol.Coerce(int),
     }
 )
 @websocket_api.require_admin
@@ -224,6 +225,15 @@ async def ws_update_room(hass, manager, msg):
 @_wrap
 async def ws_set_aux(hass, manager, msg):
     await manager.async_set_aux_settings({k: v for k, v in msg.items() if k not in ("type", "id")})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "heizplan/set_boost", vol.Required("room_id"): str, vol.Required("on"): bool}
+)
+@websocket_api.async_response
+@_wrap
+async def ws_set_boost(hass, manager, msg):
+    await manager.async_set_boost(msg["room_id"], msg["on"])
 
 
 @websocket_api.websocket_command(
@@ -281,6 +291,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
         ws_add_room,
         ws_update_room,
         ws_set_aux,
+        ws_set_boost,
         ws_remove_room,
         ws_set_season_auto,
         ws_season_check,

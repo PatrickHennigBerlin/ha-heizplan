@@ -21,11 +21,9 @@ async def async_setup_entry(
 ) -> None:
     manager: HeizplanManager = hass.data[DOMAIN][entry.entry_id]
     entities: list[SwitchEntity] = [HeizplanAuxTakeover(manager)]
-    entities += [
-        HeizplanAuxRoomSwitch(manager, rid)
-        for rid, room in manager.rooms.items()
-        if room.get("aux_climate") and room_kind(room) == KIND_CLIMATE
-    ]
+    for rid, room in manager.rooms.items():
+        if room.get("aux_climate") and room_kind(room) == KIND_CLIMATE:
+            entities += [HeizplanAuxRoomSwitch(manager, rid), HeizplanBoostSwitch(manager, rid)]
     async_add_entities(entities)
 
 
@@ -78,3 +76,35 @@ class HeizplanAuxRoomSwitch(HeizplanEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.manager.async_set_aux_enabled(self.room_id, False)
+
+
+class HeizplanBoostSwitch(HeizplanEntity, SwitchEntity):
+    """Boost mit Klima: an = Klima heizt mit, bis der Soll erreicht ist; geht dann selbst aus."""
+
+    _attr_icon = "mdi:rocket-launch-outline"
+
+    def __init__(self, manager: HeizplanManager, room_id: str) -> None:
+        super().__init__(manager)
+        self.room_id = room_id
+        self._attr_unique_id = f"{manager.entry.entry_id}_{room_id}_boost"
+        self._attr_name = f"Boost mit Klima {manager.rooms[room_id].get('name', room_id)}"
+
+    @property
+    def available(self) -> bool:
+        return self.room_id in self.manager.rooms
+
+    @property
+    def is_on(self) -> bool:
+        return bool((self.manager.aux_state.get(self.room_id) or {}).get("boost"))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        st = self.manager.aux_state.get(self.room_id) or {}
+        return {"seit": st.get("boost_since"), "spaetestens_bis": self.manager._boost_until(st),
+                "klima_heizt": bool(st.get("active"))}
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.manager.async_set_boost(self.room_id, True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.manager.async_set_boost(self.room_id, False)

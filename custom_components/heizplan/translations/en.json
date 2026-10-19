@@ -190,6 +190,24 @@
         "takeover": {
           "name": "Take over A/C",
           "description": "Also switch a manually started A/C to heat and turn it off later"
+        },
+        "boost_max": {
+          "name": "Boost max duration",
+          "description": "minutes"
+        }
+      }
+    },
+    "boost": {
+      "name": "Boost with AC",
+      "description": "AC heats the room until the setpoint is reached.",
+      "fields": {
+        "room": {
+          "name": "Room",
+          "description": "Room id, name or climate entity"
+        },
+        "on": {
+          "name": "On",
+          "description": "off = cancel boost"
         }
       }
     }

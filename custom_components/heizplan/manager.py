@@ -55,6 +55,7 @@ from .zuheizen import (
     climate_setpoint,
     conditions,
     normalize_aux_settings,
+    boost_conditions,
     outside_ok,
 )
 from .plan import (
@@ -175,11 +176,14 @@ class HeizplanManager:
             _LOGGER.warning("Heizplan: Zuheizen-Einstellungen zurückgesetzt (%s)", err)
             self.aux_settings = dict(DEFAULT_AUX_SETTINGS)
         self.aux_state = {
-            rid: {"active": bool(st.get("active")), "owned": bool(st.get("owned")), "since": st.get("since")}
+            rid: {"active": bool(st.get("active")), "owned": bool(st.get("owned")), "since": st.get("since"),
+                  "boost": bool(st.get("boost")), "boost_since": st.get("boost_since"),
+                  "by_boost": bool(st.get("by_boost"))}
             for rid, st in (data.get("aux_state") or {}).items() if rid in self.rooms
         }
         # Nach dem Neustart neu bewerten; Wartezeit beginnt neu, laufendes Zuheizen nicht blind beenden
         self._aux_fresh = {rid for rid, st in self.aux_state.items() if st["active"]}
+        # Boost überlebt einen Neustart (gespeichert), Höchstdauer zählt weiter ab boost_since
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -554,7 +558,14 @@ class HeizplanManager:
             "active": bool(st.get("active")),
             "since": st.get("since"),
             "paused": room_id in self._aux_blocked,
+            "boost": bool(st.get("boost")),
+            "boost_since": st.get("boost_since"),
+            "boost_until": self._boost_until(st),
         }
+
+    def _boost_until(self, st: dict[str, Any]) -> str | None:
+        start = dt_util.parse_datetime(st["boost_since"]) if st.get("boost") and st.get("boost_since") else None
+        return (start + timedelta(minutes=self.aux_settings["boost_max"])).isoformat() if start else None
 
     async def _aux_call(self, domain: str, service: str, data: dict[str, Any]) -> bool:
         try:
@@ -586,6 +597,25 @@ class HeizplanManager:
                 continue  # Klima (noch) nicht erreichbar: nichts entscheiden
             _, want_on, must_off = self._aux_conditions(room_id, status)
 
+            # Boost: von Hand angefordert – heizt ohne Wartezeit/Abweichung/Außengrenze bis Ist ≥ Soll
+            boost_ended = False
+            if st.get("boost"):
+                target = status["target"] if status.get("source") != SOURCE_INACTIVE else None
+                b_on, b_off = boost_conditions(target=target, current=status.get("current_temp"))
+                b_start = dt_util.parse_datetime(st["boost_since"]) if st.get("boost_since") else now
+                if b_off or now - b_start >= timedelta(minutes=self.aux_settings["boost_max"]):
+                    st.update(boost=False, boost_since=None)
+                    boost_ended = True
+                    changed = True
+                    _LOGGER.info("Heizplan: Boost %s beendet", ent)
+                else:
+                    self._aux_blocked.discard(room_id)
+                    want_on, must_off = b_on, False
+                    if b_on:
+                        self._aux_demand_since[room_id] = now - timedelta(minutes=self.aux_settings["wait"])
+            if (boost_ended or not st.get("boost")) and st.get("by_boost") and st.get("active") and not want_on:
+                must_off = True   # vom Boost gestartet: nach dem Boost aus, außer normales Zuheizen will weiter
+
             started = dt_util.parse_datetime(st["since"]) if st.get("since") else None
             settled = started is None or now - started >= timedelta(minutes=2)
             if st["active"] and hvac != HEAT and settled:
@@ -594,7 +624,7 @@ class HeizplanManager:
                 # (In den ersten 2 min nach dem Einschalten nicht, bis die Klima ihren Zustand meldet.)
                 if room_id not in self._aux_fresh:
                     self._aux_blocked.add(room_id)
-                st.update(active=False, owned=False, since=None)
+                st.update(active=False, owned=False, since=None, boost=False, boost_since=None, by_boost=False)
                 self._aux_written.pop(room_id, None)
                 changed = True
             self._aux_fresh.discard(room_id)
@@ -608,10 +638,10 @@ class HeizplanManager:
 
             if st["active"]:
                 if must_off:
-                    if hvac == HEAT and (takeover or st["owned"]):
+                    if hvac == HEAT and (takeover or st["owned"] or st.get("by_boost")):
                         await self._aux_call("climate", "set_hvac_mode", {ATTR_ENTITY_ID: ent, "hvac_mode": RUNNING_OFF})
                         _LOGGER.info("Heizplan: Zuheizen %s aus", ent)
-                    st.update(active=False, owned=False, since=None)
+                    st.update(active=False, owned=False, since=None, by_boost=False)
                     self._aux_written.pop(room_id, None)
                     changed = True
                 else:
@@ -624,12 +654,12 @@ class HeizplanManager:
 
             since = self._aux_demand_since.get(room_id)
             if (want_on and since is not None and now - since >= wait
-                    and room_id not in self._aux_blocked and can_start(hvac, takeover)):
+                    and room_id not in self._aux_blocked and can_start(hvac, takeover or bool(st.get("boost")))):
                 value = climate_setpoint(status["target"], dict(klima.attributes))
                 if await self._aux_call("climate", "set_temperature",
                                         {ATTR_ENTITY_ID: ent, "hvac_mode": HEAT, "temperature": value}):
                     self._aux_written[room_id] = value
-                    st.update(active=True, owned=hvac != HEAT, since=now.isoformat())
+                    st.update(active=True, owned=hvac != HEAT, since=now.isoformat(), by_boost=bool(st.get("boost")))
                     changed = True
                     _LOGGER.info("Heizplan: Zuheizen %s an (%s °C)", ent, value)
                     await self._aux_fan(room, klima)
@@ -650,6 +680,19 @@ class HeizplanManager:
 
     async def async_set_aux_settings(self, cfg: dict[str, Any]) -> None:
         self.aux_settings = normalize_aux_settings({**self.aux_settings, **cfg})
+        await self._changed()
+
+    async def async_set_boost(self, room_id: str, on: bool) -> None:
+        """Boost mit Klima: heizt den Raum mit der Klima, bis der Soll erreicht ist."""
+        room = self.rooms[room_id]
+        if on and (not room.get("aux_climate") or room_kind(room) != KIND_CLIMATE):
+            raise PlanError(f"{room.get('name', room_id)}: kein Klimagerät zum Zuheizen hinterlegt")
+        st = self.aux_state.setdefault(room_id, {"active": False, "owned": False, "since": None})
+        if on:
+            st.update(boost=True, boost_since=dt_util.now().isoformat())
+            self._aux_blocked.discard(room_id)
+        else:
+            st.update(boost=False, boost_since=None)
         await self._changed()
 
     async def async_set_aux_enabled(self, room_id: str, enabled: bool) -> None:

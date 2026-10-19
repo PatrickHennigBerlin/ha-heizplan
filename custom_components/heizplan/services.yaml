@@ -136,6 +136,13 @@ set_season_auto:
             - min
 set_aux:
   fields:
+    boost_max:
+      selector:
+        number:
+          min: 15
+          max: 720
+          step: 15
+          unit_of_measurement: min
     on_delta:
       selector:
         number:
@@ -164,5 +171,16 @@ set_aux:
           step: 0.5
           unit_of_measurement: "°C"
     takeover:
+      selector:
+        boolean:
+boost:
+  fields:
+    room:
+      required: true
+      example: wohnzimmer
+      selector:
+        text:
+    "on":
+      default: true
       selector:
         boolean:

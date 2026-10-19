@@ -2,7 +2,7 @@
  * Heizplan-Karte – Übersicht, Wochenplan-Editor (je Raum oder alle Räume), Vorlagen
  * gehört zur Integration custom_components/heizplan (wird von ihr ausgeliefert).
  */
-const HP_VERSION = "0.4.0";
+const HP_VERSION = "0.5.0";
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABEL = { mon: "Mo", tue: "Di", wed: "Mi", thu: "Do", fri: "Fr", sat: "Sa", sun: "So" };
 const DAY_LONG = { mon: "Montag", tue: "Dienstag", wed: "Mittwoch", thu: "Donnerstag", fri: "Freitag", sat: "Samstag", sun: "Sonntag" };
@@ -245,6 +245,7 @@ class HeizplanCard extends HTMLElement {
   _auxIcon(s) {
     const a = s.aux_heating;
     if (!a) return "";
+    if (a.boost) return `<span class="aux on" title="Boost: Klima heizt mit, bis der Soll erreicht ist"><ha-icon icon="mdi:rocket-launch-outline"></ha-icon>Boost</span>`;
     if (a.active) return `<span class="aux on" title="Klima heizt mit"><ha-icon icon="mdi:air-conditioner"></ha-icon>Klima</span>`;
     if (a.paused) return `<span class="aux" title="Klima von Hand geändert – Zuheizen pausiert">Klima pausiert</span>`;
     if (a.demand && a.enabled) return `<span class="aux wait" title="Zu kalt – Klima startet nach der Wartezeit">Klima bald</span>`;
@@ -300,6 +301,9 @@ class HeizplanCard extends HTMLElement {
             ${actions}
             ${s.source === "override" ? `<button class="txt" data-clear="${r.id}">zurück zum Plan</button>` : sw ? "" : `<span class="hint">± für 2 Std.</span>`}
           </div>
+          ${s.aux_heating && !sw ? (s.aux_heating.boost
+            ? `<button class="boost on" data-boost="${r.id}" data-on="0" title="Boost abbrechen"><ha-icon icon="mdi:rocket-launch"></ha-icon>Boost läuft – bis ${fmtT(s.target)} °C · abbrechen</button>`
+            : `<button class="boost" data-boost="${r.id}" data-on="1" ${s.source === "inactive" || (s.current_temp != null && s.target != null && s.current_temp >= s.target) ? "disabled" : ""} title="${s.current_temp != null && s.target != null && s.current_temp >= s.target ? "Soll ist schon erreicht" : "Klima heizt mit, bis der Soll erreicht ist, dann geht sie wieder aus"}"><ha-icon icon="mdi:rocket-launch-outline"></ha-icon>Boost mit Klima</button>`) : ""}
         </div>`;
     }).join("")}</div>`;
   }
@@ -569,6 +573,8 @@ class HeizplanCard extends HTMLElement {
     }));
     $("[data-ovr-on]").forEach((el) => el.addEventListener("click", () =>
       this._call({ type: "heizplan/set_override", room_id: el.dataset.ovrOn, on: el.dataset.val === "1", minutes: 120 })));
+    $("[data-boost]").forEach((el) => el.addEventListener("click", () =>
+      this._call({ type: "heizplan/set_boost", room_id: el.dataset.boost, on: el.dataset.on === "1" }).catch(() => {})));
     $("[data-clear]").forEach((el) => el.addEventListener("click", () => this._call({ type: "heizplan/clear_override", room_id: el.dataset.clear })));
 
     // Wochenplan
@@ -757,6 +763,11 @@ const STYLE = `
   .aux { font-size:.72em; padding:2px 7px; border-radius:10px; white-space:nowrap; background: rgba(127,127,127,.15); display:inline-flex; align-items:center; gap:3px; }
   .aux.on { background: rgba(232,89,12,.18); color:#c2410c; font-weight:600; }
   .aux.wait { background: rgba(3,169,244,.15); }
+  .boost { align-self:flex-start; display:inline-flex; align-items:center; gap:5px; border:1px dashed rgba(232,89,12,.6); background:none;
+    color:#c2410c; border-radius:14px; padding:4px 10px; font:inherit; font-size:.82em; cursor:pointer; }
+  .boost ha-icon { --mdc-icon-size:16px; width:16px; height:16px; }
+  .boost.on { border-style:solid; background: rgba(232,89,12,.15); font-weight:600; }
+  .boost[disabled] { opacity:.4; cursor:default; }
   .aux ha-icon { --mdc-icon-size:14px; width:14px; height:14px; }
   .badge { font-size:.75em; padding:2px 8px; border-radius:10px; background: rgba(127,127,127,.15); white-space:nowrap; }
   .badge.override { background: rgba(255,152,0,.25); }
@@ -842,7 +853,7 @@ const STYLE = `
     .tab, .chip, .seg { white-space:nowrap; flex:none; }
     .grid { grid-template-columns: 1fr; gap: 8px; }
     .tile { display:grid; grid-template-columns: 1fr auto; column-gap:8px; row-gap:6px; padding:8px 10px; }
-    .tile > .trow, .tile > .bar, .tile > .warn, .tile > .next { grid-column: 1 / -1; }
+    .tile > .trow, .tile > .bar, .tile > .warn, .tile > .next, .tile > .boost { grid-column: 1 / -1; }
     .tile > .temps { grid-column: 1; gap:14px; }
     .tile > .actions { grid-column: 2; grid-row: 2; align-self:end; }
     .tile.switch > .actions { flex-direction:column; align-items:flex-end; gap:0; }

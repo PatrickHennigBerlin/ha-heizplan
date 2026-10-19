@@ -1,7 +1,7 @@
 """Konstanten für Heizplan."""
 
 DOMAIN = "heizplan"
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 
 STORAGE_KEY = "heizplan"
 STORAGE_VERSION = 1

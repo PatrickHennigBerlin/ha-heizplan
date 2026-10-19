@@ -15,6 +15,7 @@ DEFAULT_AUX_SETTINGS: dict[str, Any] = {
     "wait": 10,            # Einschaltbedingung muss so lange durchgehend gelten (min)
     "outside_limit": 10.0, # nur zuheizen, wenn außen kälter (°C) – nur mit Außenfühler
     "takeover": True,      # von Hand eingeschaltete Klima übernehmen
+    "boost_max": 180,      # Boost endet spätestens nach so vielen Minuten
 }
 
 RUNNING_OFF = "off"
@@ -32,6 +33,7 @@ def normalize_aux_settings(cfg: dict[str, Any] | None) -> dict[str, Any]:
         out["off_delta"] = round(float(out["off_delta"]) * 10) / 10
         out["wait"] = int(out["wait"])
         out["outside_limit"] = round(float(out["outside_limit"]) * 2) / 2
+        out["boost_max"] = int(out["boost_max"])
     except (TypeError, ValueError) as err:
         raise AuxError("Zuheizen: Werte müssen Zahlen sein") from err
     out["takeover"] = bool(out["takeover"])
@@ -43,6 +45,8 @@ def normalize_aux_settings(cfg: dict[str, Any] | None) -> dict[str, Any]:
         raise AuxError("Wartezeit: 0 bis 120 min")
     if not -30 <= out["outside_limit"] <= 30:
         raise AuxError("Außengrenze: −30 bis 30 °C")
+    if not 15 <= out["boost_max"] <= 720:
+        raise AuxError("Boost-Höchstdauer: 15 bis 720 min")
     return out
 
 
@@ -78,6 +82,17 @@ def conditions(*, enabled: bool, target: Any, current: Any, outside_is_ok: bool,
     want_on = (t - c) >= settings["on_delta"] - 1e-9
     must_off = c >= t - settings["off_delta"] - 1e-9
     return want_on, must_off
+
+
+def boost_conditions(*, target: Any, current: Any) -> tuple[bool, bool]:
+    """Boost: Klima heizt, bis der Raum-Soll erreicht ist. -> (heizen, beenden)."""
+    t, c = _num(target), _num(current)
+    if t is None:
+        return False, True          # Raum inaktiv: Boost beenden
+    if c is None:
+        return False, False         # ohne Ist-Wert abwarten
+    reached = c >= t - 1e-9
+    return not reached, reached
 
 
 def climate_setpoint(target: float, attrs: dict[str, Any]) -> float:
