@@ -656,8 +656,10 @@ class HeizplanManager:
             if (want_on and since is not None and now - since >= wait
                     and room_id not in self._aux_blocked and can_start(hvac, takeover or bool(st.get("boost")))):
                 value = climate_setpoint(status["target"], dict(klima.attributes))
-                if await self._aux_call("climate", "set_temperature",
-                                        {ATTR_ENTITY_ID: ent, "hvac_mode": HEAT, "temperature": value}):
+                # erst Modus, dann Soll: KNX-Klimas werten hvac_mode in set_temperature nicht aus
+                if (await self._aux_call("climate", "set_hvac_mode", {ATTR_ENTITY_ID: ent, "hvac_mode": HEAT})
+                        and await self._aux_call("climate", "set_temperature",
+                                                 {ATTR_ENTITY_ID: ent, "temperature": value})):
                     self._aux_written[room_id] = value
                     st.update(active=True, owned=hvac != HEAT, since=now.isoformat(), by_boost=bool(st.get("boost")))
                     changed = True

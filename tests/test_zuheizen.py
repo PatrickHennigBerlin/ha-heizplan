@@ -110,6 +110,9 @@ class Env:
         await self.hass.async_block_till_done()
 
     def klima_calls(self, kind):
+        if kind in ("heat_on", "off"):   # Modus-Aufrufe getrennt: Einschalten (heat) bzw. Ausschalten (off)
+            mode = "heat" if kind == "heat_on" else "off"
+            return [c for c in self.klima_calls("set_hvac_mode") if c.data.get("hvac_mode") == mode]
         return [c for c in self.calls[kind] if c.data.get("entity_id") == "climate.klima_wz"]
 
 
@@ -183,7 +186,7 @@ async def test_on_after_wait_off_with_hysteresis(hass, clock):
     assert not env.klima_calls("set_temperature")
     await env.at(17)
     on = env.klima_calls("set_temperature")
-    assert on and on[-1].data == {"entity_id": "climate.klima_wz", "hvac_mode": "heat", "temperature": 22.0}
+    assert on and on[-1].data == {"entity_id": "climate.klima_wz", "temperature": 22.0} and env.klima_calls("heat_on")
     assert env.calls["switch_on"][-1].data["entity_id"] == "switch.lufter_auto_wz"
     assert env.manager.aux_state["lounge"]["active"] is True
     bs = [s for s in hass.states.async_all("binary_sensor") if s.entity_id.startswith("binary_sensor.heizplan_zuheizen")]
@@ -192,10 +195,10 @@ async def test_on_after_wait_off_with_hysteresis(hass, clock):
     env.klima("heat", temperature=22)
     env.ist(21.2)      # zwischen den Schwellen -> bleibt an
     await env.at(30)
-    assert not env.klima_calls("set_hvac_mode")
+    assert not env.klima_calls("off")
     env.ist(21.5)      # Soll − 0,5 -> aus
     await env.at(31)
-    off = env.klima_calls("set_hvac_mode")
+    off = env.klima_calls("off")
     assert off and off[-1].data == {"entity_id": "climate.klima_wz", "hvac_mode": "off"}
     assert env.manager.aux_state["lounge"]["active"] is False
 
@@ -216,7 +219,7 @@ async def test_setpoint_follows_and_away(hass, clock):
     await env.manager.async_clear_override("lounge")
     await env.manager.async_set_mode("away")
     await hass.async_block_till_done()
-    assert env.klima_calls("set_hvac_mode")[-1].data["hvac_mode"] == "off"
+    assert env.klima_calls("off")[-1].data["hvac_mode"] == "off"
 
 
 async def test_outside_sensor(hass, clock):
@@ -237,7 +240,7 @@ async def test_outside_sensor(hass, clock):
     env.klima("heat", temperature=22)
     hass.states.async_set("sensor.aussen", "11")     # wärmer als Grenze -> aus
     await env.at(61)
-    assert env.klima_calls("set_hvac_mode")[-1].data["hvac_mode"] == "off"
+    assert env.klima_calls("off")[-1].data["hvac_mode"] == "off"
 
 
 async def test_takeover_off_and_on(hass, clock):
@@ -256,13 +259,13 @@ async def test_takeover_off_and_on(hass, clock):
     env.klima("heat")
     env.ist(22)
     await env.at(30)
-    assert env.klima_calls("set_hvac_mode")[-1].data["hvac_mode"] == "off"
+    assert env.klima_calls("off")[-1].data["hvac_mode"] == "off"
     # Übernehmen an: auch eine kühlende Klima auf Heizen stellen
     env.klima("cool")
     env.ist(19)
     await env.at(31)
     await env.at(41)
-    assert env.klima_calls("set_temperature")[-1].data["hvac_mode"] == "heat"
+    assert env.klima_calls("heat_on")
 
 
 async def test_manual_off_pauses_until_demand_ends(hass, clock):
@@ -298,7 +301,7 @@ async def test_fan_mode_and_room_switch(hass, clock):
     assert len(sw) == 1
     await hass.services.async_call("switch", "turn_off", {"entity_id": sw[0]}, blocking=True)
     await hass.async_block_till_done()
-    assert env.klima_calls("set_hvac_mode")[-1].data["hvac_mode"] == "off"
+    assert env.klima_calls("off")[-1].data["hvac_mode"] == "off"
     assert env.manager.rooms["lounge"]["aux_enabled"] is False
 
 
@@ -314,7 +317,7 @@ async def test_restart_keeps_running(hass, clock):
     assert await hass.config_entries.async_reload(env.entry.entry_id)
     await hass.async_block_till_done()
     await env.at(12)
-    assert not env.klima_calls("set_hvac_mode")
+    assert not env.klima_calls("off")
     assert env.manager.aux_state["lounge"]["active"] is True
     # Klima nach Neustart doch aus: nur zurücksetzen (keine Pause), Wartezeit beginnt neu
     env.klima("off")
@@ -350,15 +353,15 @@ async def test_boost_runs_until_setpoint(hass, clock):
     await ent.async_turn_on()
     await hass.async_block_till_done()
     on = env.klima_calls("set_temperature")
-    assert on and on[-1].data == {"entity_id": "climate.klima_wz", "hvac_mode": "heat", "temperature": 22.0}
+    assert on and on[-1].data == {"entity_id": "climate.klima_wz", "temperature": 22.0} and env.klima_calls("heat_on")
     assert hass.states.get(sw).state == "on"
     env.klima("heat", temperature=22)
     env.ist(21.8)
     await env.at(10)
-    assert not env.klima_calls("set_hvac_mode")
+    assert not env.klima_calls("off")
     env.ist(22.0)                      # Soll erreicht -> Klima aus, Boost aus
     await env.at(11)
-    off = env.klima_calls("set_hvac_mode")
+    off = env.klima_calls("off")
     assert off and off[-1].data == {"entity_id": "climate.klima_wz", "hvac_mode": "off"}
     assert hass.states.get(sw).state == "off"
 
@@ -374,7 +377,7 @@ async def test_boost_cancel_and_max_duration(hass, clock):
     env.ist(21.0)
     await hass.services.async_call("heizplan", "boost", {"room": "lounge", "on": False}, blocking=True)
     await hass.async_block_till_done()
-    assert env.klima_calls("set_hvac_mode")[-1].data["hvac_mode"] == "off"
+    assert env.klima_calls("off")[-1].data["hvac_mode"] == "off"
     # Höchstdauer
     env.klima("off")
     await hass.services.async_call("heizplan", "set_aux", {"boost_max": 30}, blocking=True)
@@ -382,7 +385,7 @@ async def test_boost_cancel_and_max_duration(hass, clock):
     await hass.async_block_till_done()
     env.klima("heat", temperature=22)
     env.ist(21.9)
-    n = len(env.klima_calls("set_hvac_mode"))
+    n = len(env.klima_calls("off"))
     await env.at(31)
-    assert len(env.klima_calls("set_hvac_mode")) == n + 1
+    assert len(env.klima_calls("off")) == n + 1
     assert env.manager.aux_state["lounge"]["boost"] is False
