@@ -198,7 +198,7 @@
       }
     },
     "boost": {
-      "name": "Boost mit Klima",
+      "name": "Boost mit Wärmepumpe",
       "description": "Klima heizt den Raum mit, bis der Soll erreicht ist (höchstens Boost-Höchstdauer).",
       "fields": {
         "room": {

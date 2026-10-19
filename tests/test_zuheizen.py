@@ -332,7 +332,7 @@ async def test_restart_keeps_running(hass, clock):
     assert len(env.klima_calls("set_temperature")) == n + 1
 
 
-# ------------------------------------------------------------------ Boost mit Klima
+# ------------------------------------------------------------------ Boost mit Wärmepumpe
 def test_boost_conditions():
     from custom_components.heizplan.zuheizen import boost_conditions
     assert boost_conditions(target=22, current=21.9) == (True, False)

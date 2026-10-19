@@ -2,7 +2,7 @@
  * Heizplan-Karte – Übersicht, Wochenplan-Editor (je Raum oder alle Räume), Vorlagen
  * gehört zur Integration custom_components/heizplan (wird von ihr ausgeliefert).
  */
-const HP_VERSION = "0.5.4";
+const HP_VERSION = "0.5.6";
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABEL = { mon: "Mo", tue: "Di", wed: "Mi", thu: "Do", fri: "Fr", sat: "Sa", sun: "So" };
 const DAY_LONG = { mon: "Montag", tue: "Dienstag", wed: "Mittwoch", thu: "Donnerstag", fri: "Freitag", sat: "Samstag", sun: "Sonntag" };
@@ -245,7 +245,7 @@ class HeizplanCard extends HTMLElement {
   _auxIcon(s) {
     const a = s.aux_heating;
     if (!a) return "";
-    if (a.boost) return `<span class="aux on" title="Boost: Klima heizt mit, bis der Soll erreicht ist"><ha-icon icon="mdi:rocket-launch-outline"></ha-icon>Boost</span>`;
+    if (a.boost) return `<span class="aux on" title="Boost: Wärmepumpe heizt mit, bis der Soll erreicht ist"><ha-icon icon="mdi:rocket-launch-outline"></ha-icon>Boost</span>`;
     if (a.active) return `<span class="aux on" title="Klima heizt mit"><ha-icon icon="mdi:air-conditioner"></ha-icon>Klima</span>`;
     if (a.paused) return `<span class="aux" title="Klima von Hand geändert – Zuheizen pausiert">Klima pausiert</span>`;
     if (a.demand && a.enabled) return `<span class="aux wait" title="Zu kalt – Klima startet nach der Wartezeit">Klima bald</span>`;
@@ -303,7 +303,7 @@ class HeizplanCard extends HTMLElement {
           </div>
           ${s.aux_heating && !sw ? (s.aux_heating.boost
             ? `<button class="boost on" data-boost="${r.id}" data-on="0" title="Boost abbrechen"><ha-icon icon="mdi:rocket-launch"></ha-icon>Boost läuft – bis ${fmtT(s.target)} °C · abbrechen</button>`
-            : `<button class="boost" data-boost="${r.id}" data-on="1" ${s.source === "inactive" || (s.current_temp != null && s.target != null && s.current_temp >= s.target) ? "disabled" : ""} title="${s.current_temp != null && s.target != null && s.current_temp >= s.target ? "Soll ist schon erreicht" : "Klima heizt mit, bis der Soll erreicht ist, dann geht sie wieder aus"}"><ha-icon icon="mdi:rocket-launch-outline"></ha-icon>Boost mit Klima</button>`) : ""}
+            : `<button class="boost" data-boost="${r.id}" data-on="1" ${s.source === "inactive" || (s.current_temp != null && s.target != null && s.current_temp >= s.target) ? "disabled" : ""} title="${s.current_temp != null && s.target != null && s.current_temp >= s.target ? "Soll ist schon erreicht" : "Die Wärmepumpe (Klima) heizt mit, bis der Soll erreicht ist, dann geht sie wieder aus"}"><ha-icon icon="mdi:rocket-launch-outline"></ha-icon>Boost mit Wärmepumpe</button>`) : ""}
         </div>`;
     }).join("")}</div>`;
   }

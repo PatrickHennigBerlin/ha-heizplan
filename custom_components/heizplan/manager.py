@@ -721,7 +721,7 @@ class HeizplanManager:
         await self._changed()
 
     async def async_set_boost(self, room_id: str, on: bool) -> None:
-        """Boost mit Klima: heizt den Raum mit der Klima, bis der Soll erreicht ist."""
+        """Boost mit Wärmepumpe: heizt den Raum mit der Klima, bis der Soll erreicht ist."""
         room = self.rooms[room_id]
         if on and (not room.get("aux_climate") or room_kind(room) != KIND_CLIMATE):
             raise PlanError(f"{room.get('name', room_id)}: kein Klimagerät zum Zuheizen hinterlegt")

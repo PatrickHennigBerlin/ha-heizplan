@@ -27,7 +27,7 @@ async def async_setup_entry(
                           0, 60, 1, UnitOfTime.MINUTES),
         HeizplanAuxNumber(manager, "outside_limit", "Zuheizen Außengrenze", "mdi:home-thermometer-outline",
                           -10, 20, 0.5, UnitOfTemperature.CELSIUS),
-        HeizplanAuxNumber(manager, "boost_max", "Boost mit Klima Höchstdauer", "mdi:timer-outline",
+        HeizplanAuxNumber(manager, "boost_max", "Boost mit Wärmepumpe Höchstdauer", "mdi:timer-outline",
                           15, 720, 15, UnitOfTime.MINUTES),
     ])
 

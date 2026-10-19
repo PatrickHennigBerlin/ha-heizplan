@@ -79,7 +79,7 @@ class HeizplanAuxRoomSwitch(HeizplanEntity, SwitchEntity):
 
 
 class HeizplanBoostSwitch(HeizplanEntity, SwitchEntity):
-    """Boost mit Klima: an = Klima heizt mit, bis der Soll erreicht ist; geht dann selbst aus."""
+    """Boost mit Wärmepumpe: an = Klima heizt mit, bis der Soll erreicht ist; geht dann selbst aus."""
 
     _attr_icon = "mdi:rocket-launch-outline"
 
@@ -87,7 +87,7 @@ class HeizplanBoostSwitch(HeizplanEntity, SwitchEntity):
         super().__init__(manager)
         self.room_id = room_id
         self._attr_unique_id = f"{manager.entry.entry_id}_{room_id}_boost"
-        self._attr_name = f"Boost mit Klima {manager.rooms[room_id].get('name', room_id)}"
+        self._attr_name = f"Boost mit Wärmepumpe {manager.rooms[room_id].get('name', room_id)}"
 
     @property
     def available(self) -> bool:

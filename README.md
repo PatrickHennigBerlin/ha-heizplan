@@ -119,10 +119,10 @@ pytest
 
 Lizenz: MIT
 
-## Boost mit Klima
+## Boost mit Wärmepumpe
 
 Je Raum mit hinterlegtem Klimagerät gibt es `switch.heizplan_boost_mit_klima_<raum>` (und in der Karte den Knopf
-„Boost mit Klima“). Einschalten = die Klima heizt sofort mit (ohne Wartezeit, Abweichung und Außengrenze), bis der
+„Boost mit Wärmepumpe“). Einschalten = die Klima heizt sofort mit (ohne Wartezeit, Abweichung und Außengrenze), bis der
 Ist den Raum-Soll erreicht. Dann geht die Klima aus und der Schalter von selbst zurück. Abbrechen jederzeit; spätestens
 nach der Höchstdauer (`number.heizplan_boost_mit_klima_hochstdauer`, Standard 180 min). Dienst: `heizplan.boost`
 (`room`, `on`). Wird die Klima während des Boosts von Hand umgestellt, endet der Boost.
