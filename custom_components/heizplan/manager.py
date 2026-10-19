@@ -38,6 +38,7 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
+from .klima_start import async_start_climate
 from .season import (
     DEFAULT_SEASON_AUTO,
     SEASON_DATES,
@@ -72,6 +73,7 @@ from .plan import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+START_RETRY = timedelta(minutes=5)   # nach unbestätigtem Einschalten so lange warten
 
 
 def room_id_from_entity(entity_id: str) -> str:
@@ -119,6 +121,8 @@ class HeizplanManager:
         self._aux_demand_since: dict[str, datetime] = {}  # Einschaltbedingung gilt seit (nicht gespeichert)
         self._aux_blocked: set[str] = set()   # Klima während des Zuheizens von Hand geändert -> Pause bis Bedarf endet
         self._aux_fresh: set[str] = set()     # nach Neustart noch nicht neu bewertet
+        self._aux_starting: set[str] = set()  # Klima wird gerade eingeschaltet (klima_start)
+        self._aux_start_failed: dict[str, datetime] = {}  # Einschalten nicht bestätigt -> START_RETRY warten
         self._aux_written: dict[str, float] = {}
 
     # ------------------------------------------------------------------ Optionen
@@ -599,6 +603,8 @@ class HeizplanManager:
                 status = self.room_status(room_id, now)
             except (KeyError, PlanError):
                 continue
+            if room_id in self._aux_starting:
+                continue  # Klima wird gerade eingeschaltet (wartet auf Bestätigung)
             st = self.aux_state.setdefault(room_id, {"active": False, "owned": False, "since": None})
             klima = self.hass.states.get(ent)
             hvac = klima.state if klima is not None else None
@@ -664,18 +670,38 @@ class HeizplanManager:
             since = self._aux_demand_since.get(room_id)
             if (want_on and since is not None and now - since >= wait
                     and room_id not in self._aux_blocked and can_start(hvac, takeover or bool(st.get("boost")))):
+                failed = self._aux_start_failed.get(room_id)
+                if failed is not None and now - failed < START_RETRY:
+                    continue
                 value = climate_setpoint(status["target"], dict(klima.attributes))
-                # Erst den Soll (Gerät ist noch aus), dann einschalten + Modus. KNX-Klimas werten hvac_mode im
-                # Dienst set_temperature nicht aus, und ein Soll direkt nach dem Einschalten ließ das Intesis-
-                # Gateway (Küche) das Einschalten verwerfen.
-                if (await self._aux_call("climate", "set_temperature", {ATTR_ENTITY_ID: ent, "temperature": value})
-                        and await self._aux_call("climate", "set_hvac_mode", {ATTR_ENTITY_ID: ent, "hvac_mode": HEAT})):
-                    self._aux_written[room_id] = value
-                    st.update(active=True, owned=hvac != HEAT, since=now.isoformat(), by_boost=bool(st.get("boost")))
-                    changed = True
-                    _LOGGER.info("Heizplan: Zuheizen %s an (%s °C)", ent, value)
-                    await self._aux_fan(room, klima)
+                # Zuerst EIN und auf die Bestätigung des Geräts warten, dann Modus und Soll (klima_start).
+                # Läuft im Hintergrund; solange bleibt der Raum hier unangetastet.
+                self._aux_starting.add(room_id)
+                self.hass.async_create_task(
+                    self._aux_start(room_id, ent, value, owned=hvac != HEAT), f"heizplan_klima_start_{room_id}")
         return changed
+
+    async def _aux_start(self, room_id: str, ent: str, value: float, owned: bool) -> None:
+        try:
+            ok = await async_start_climate(self.hass, ent, HEAT, value, self._aux_call)
+            st = self.aux_state.setdefault(room_id, {"active": False, "owned": False, "since": None})
+            if ok:
+                self._aux_start_failed.pop(room_id, None)
+                self._aux_written[room_id] = value
+                st.update(active=True, owned=owned, since=dt_util.now().isoformat(), by_boost=bool(st.get("boost")))
+                _LOGGER.info("Heizplan: Zuheizen %s an (%s °C)", ent, value)
+                room = self.rooms.get(room_id)
+                klima = self.hass.states.get(ent)
+                if room is not None and klima is not None:
+                    await self._aux_fan(room, klima)
+            else:
+                self._aux_start_failed[room_id] = dt_util.now()
+                _LOGGER.warning("Heizplan: Zuheizen %s – Klima hat das Einschalten nicht bestätigt, "
+                                "neuer Versuch in %s min", ent, int(START_RETRY.total_seconds() // 60))
+        finally:
+            self._aux_starting.discard(room_id)
+            self._schedule_save()
+            async_dispatcher_send(self.hass, SIGNAL_UPDATED)
 
     async def _aux_fan(self, room: dict[str, Any], klima) -> None:
         fan_mode = room.get("aux_fan_mode")
