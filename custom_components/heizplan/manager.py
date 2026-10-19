@@ -563,6 +563,15 @@ class HeizplanManager:
             "boost_until": self._boost_until(st),
         }
 
+    def _boost_uncertain(self, room: dict[str, Any]) -> bool:
+        """True, solange Heizperiode-Schalter oder Raum-Thermostat nicht verfügbar sind (z. B. beim Neustart)."""
+        for ent in (self.season_entity if room.get("follow_season", True) else None, room.get("climate")):
+            if ent:
+                state = self.hass.states.get(ent)
+                if state is None or state.state in ("unavailable", "unknown"):
+                    return True
+        return False
+
     def _boost_until(self, st: dict[str, Any]) -> str | None:
         start = dt_util.parse_datetime(st["boost_since"]) if st.get("boost") and st.get("boost_since") else None
         return (start + timedelta(minutes=self.aux_settings["boost_max"])).isoformat() if start else None
@@ -593,8 +602,8 @@ class HeizplanManager:
             st = self.aux_state.setdefault(room_id, {"active": False, "owned": False, "since": None})
             klima = self.hass.states.get(ent)
             hvac = klima.state if klima is not None else None
-            if hvac in (None, "unavailable", "unknown"):
-                continue  # Klima (noch) nicht erreichbar: nichts entscheiden
+            if hvac in (None, "unavailable", "unknown") or self._boost_uncertain(room):
+                continue  # Klima, Heizperiode oder Thermostat (noch) nicht erreichbar (z. B. Neustart): nichts entscheiden
             _, want_on, must_off = self._aux_conditions(room_id, status)
 
             # Boost: von Hand angefordert – heizt ohne Wartezeit/Abweichung/Außengrenze bis Ist ≥ Soll

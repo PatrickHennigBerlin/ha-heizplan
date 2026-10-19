@@ -390,3 +390,17 @@ async def test_boost_cancel_and_max_duration(hass, clock):
     assert len(env.klima_calls("off")) == n + 1
     assert env.manager.aux_state["lounge"]["boost"] is False
 
+
+
+async def test_boost_survives_unavailable_season(hass, clock):
+    env = await _setup(hass, clock)
+    env.ist(20.0)
+    await hass.services.async_call("heizplan", "boost", {"room": "lounge"}, blocking=True)
+    await hass.async_block_till_done()
+    env.klima("heat", temperature=22)
+    hass.states.async_set("switch.heizperiode", "unavailable")   # z. B. Neustart
+    await env.at(1)
+    assert env.manager.aux_state["lounge"]["boost"] is True
+    hass.states.async_set("switch.heizperiode", "on")
+    await env.at(2)
+    assert env.manager.aux_state["lounge"]["boost"] is True

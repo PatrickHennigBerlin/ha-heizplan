@@ -17,5 +17,5 @@
   "issue_tracker": "https://github.com/PatrickHennigBerlin/ha-heizplan/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "0.5.2"
+  "version": "0.5.3"
 }
