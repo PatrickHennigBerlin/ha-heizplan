@@ -170,3 +170,63 @@ async def async_start_climate(hass: HomeAssistant, entity_id: str, hvac_mode: st
         else:
             await _fan()
     return True
+
+
+def knx_fan_state_address(hass: HomeAssistant, entity_id: str) -> str | None:
+    """Status-GA der Lüfterstufe einer KNX-Klima (nur Stufenmodus 1..n), sonst None."""
+    try:
+        comp = hass.data.get("entity_components", {}).get("climate")
+        entity = comp.get_entity(entity_id) if comp is not None else None
+        if entity is None or getattr(entity, "platform", None) is None or entity.platform.platform_name != "knx":
+            return None
+        fan = getattr(entity._device, "fan_speed", None)  # noqa: SLF001
+        if fan is None or "Ucount" not in type(fan).__name__:
+            return None   # Prozentmodus: Rückmeldung nicht 1:1 vergleichbar
+        ga = getattr(fan, "group_address_state", None)
+        return str(ga) if ga else None
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("Klima-Start: Lüfter-Status-Adresse von %s nicht ermittelbar", entity_id, exc_info=True)
+        return None
+
+
+async def async_set_fan(hass: HomeAssistant, entity_id: str, fan: str, call: Call,
+                        auto_switch: str | None = None) -> bool:
+    """Lüfter setzen, Schritt für Schritt mit Bestätigung: 'auto' oder eine Stufe.
+
+    Stufe bei eingeschaltetem Auto-Schalter: erst Auto AUS (bestätigt), dann die Stufe (bestätigt) –
+    beides direkt hintereinander verwirft das Intesis-Gateway (Küche 21.10.2026).
+    """
+    state = hass.states.get(entity_id)
+    modes = list(state.attributes.get("fan_modes") or []) if state is not None else []
+    data = {ATTR_ENTITY_ID: entity_id}
+
+    async def _switch(sw: str, on: bool) -> bool:
+        async def _send() -> bool:
+            return await call(sw.split(".", 1)[0], "turn_on" if on else "turn_off", {ATTR_ENTITY_ID: sw})
+        ga = knx_switch_state_address(hass, sw)
+        if ga:
+            return await _confirm(hass, ga, 1 if on else 0, _send, call, f"{sw} {'EIN' if on else 'AUS'}")
+        return await _send()
+
+    if fan == "auto":
+        if "auto" in modes:
+            return await call("climate", "set_fan_mode", {**data, "fan_mode": "auto"})
+        if auto_switch:
+            return await _switch(auto_switch, True)
+        return False
+
+    if auto_switch:
+        sw_state = hass.states.get(auto_switch)
+        if sw_state is not None and sw_state.state == "on":
+            if not await _switch(auto_switch, False):
+                _LOGGER.warning("Lüfter: %s – Auto AUS nicht bestätigt, Stufe %s trotzdem", entity_id, fan)
+    if fan not in modes:
+        return False
+
+    async def _level() -> bool:
+        return await call("climate", "set_fan_mode", {**data, "fan_mode": fan})
+
+    ga = knx_fan_state_address(hass, entity_id)
+    if ga and fan.isdigit():
+        return await _confirm(hass, ga, int(fan), _level, call, f"{entity_id} Lüfter {fan}")
+    return await _level()

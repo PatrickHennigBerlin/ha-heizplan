@@ -85,3 +85,25 @@ async def test_luefter_auto_zum_schluss(hass, order):
     assert [s for s, _ in order] == ["climate.turn_on", "climate.set_hvac_mode", "climate.set_temperature",
                                      "switch.turn_on"]
     assert order[-1][1]["entity_id"] == "switch.lufter_auto_kuche"
+
+
+async def test_luefterstufe_erst_auto_aus_dann_stufe(hass, order, monkeypatch):
+    for d, s in (("switch", "turn_off"), ("climate", "set_fan_mode")):
+        async def handler(call, _n=f"{d}.{s}"):
+            order.append((_n, dict(call.data)))
+        hass.services.async_register(d, s, handler)
+    hass.states.async_set(ENT, "heat", {"supported_features": 393, "fan_modes": ["off", "1", "2", "3", "4"]})
+    hass.states.async_set("switch.lufter_auto_kuche", "on")
+    monkeypatch.setattr(klima_start, "knx_switch_state_address", lambda h, e: "3/0/6")
+    monkeypatch.setattr(klima_start, "knx_fan_state_address", lambda h, e: "3/0/9")
+    monkeypatch.setattr(klima_start, "WAIT_SPONTANEOUS", 0.5)
+    monkeypatch.setattr(klima_start, "WAIT_READ", 0.5)
+    task = hass.async_create_task(klima_start.async_set_fan(hass, ENT, "4", await _call(hass),
+                                                            auto_switch="switch.lufter_auto_kuche"))
+    await asyncio.sleep(0.05)
+    assert [s for s, _ in order] == ["switch.turn_off"]          # Stufe erst nach Bestätigung
+    async_dispatcher_send(hass, "knx_telegram", None, _tg("3/0/6", 0))
+    await asyncio.sleep(0.05)
+    assert [s for s, _ in order] == ["switch.turn_off", "climate.set_fan_mode"]
+    async_dispatcher_send(hass, "knx_telegram", None, _tg("3/0/9", (4,)))
+    assert await task
