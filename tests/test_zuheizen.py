@@ -429,3 +429,37 @@ async def test_boost_ueberlebt_neustart_mit_falschem_aus(hass, clock):
     await env.at(7)
     assert len(env.klima_calls("off")) == n + 1          # Boost zu Ende -> Klima aus
     assert env.manager.aux_state["lounge"]["active"] is False
+
+
+def test_boost_fan_want():
+    from custom_components.heizplan.zuheizen import DEFAULT_AUX_SETTINGS, boost_fan_want
+    cfg = dict(DEFAULT_AUX_SETTINGS)
+    assert boost_fan_want(minutes_running=1, target=22, current=20, cfg=cfg) == "auto"   # Anlaufen
+    assert boost_fan_want(minutes_running=3, target=22, current=20, cfg=cfg) == "3"      # warme Luft
+    assert boost_fan_want(minutes_running=30, target=22, current=21.5, cfg=cfg) == "auto"  # 0,5 K vor Soll
+    assert boost_fan_want(minutes_running=30, target=22, current=None, cfg=cfg) is None
+    assert boost_fan_want(minutes_running=30, target=22, current=20, cfg={**cfg, "boost_fan": ""}) is None
+
+
+async def test_boost_luefter_stufen(hass, clock, monkeypatch):
+    from custom_components.heizplan import manager as mgr
+    calls = []
+
+    async def fake_set_fan(hass_, ent, fan, call, auto_switch=None):
+        calls.append(fan)
+        return True
+    monkeypatch.setattr(mgr, "klima_set_fan", fake_set_fan)
+    env = await _setup(hass, clock)
+    env.ist(20.0)
+    await hass.services.async_call("heizplan", "boost", {"room": "lounge"}, blocking=True)
+    await hass.async_block_till_done()
+    env.klima("heat", temperature=22)
+    await env.at(1)
+    assert calls == []                       # Anlaufen: Auto bleibt
+    await env.at(4)
+    await hass.async_block_till_done()
+    assert calls == ["3"]
+    env.ist(21.6)
+    await env.at(6)
+    await hass.async_block_till_done()
+    assert calls == ["3", "auto"]

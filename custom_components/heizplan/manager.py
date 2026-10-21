@@ -38,7 +38,7 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
-from .klima_start import async_start_climate
+from .klima_start import async_set_fan as klima_set_fan, async_start_climate
 from .season import (
     DEFAULT_SEASON_AUTO,
     SEASON_DATES,
@@ -57,6 +57,7 @@ from .zuheizen import (
     conditions,
     normalize_aux_settings,
     boost_conditions,
+    boost_fan_want,
     outside_ok,
 )
 from .plan import (
@@ -123,6 +124,7 @@ class HeizplanManager:
         self._aux_blocked: set[str] = set()   # Klima während des Zuheizens von Hand geändert -> Pause bis Bedarf endet
         self._aux_fresh: set[str] = set()     # nach Neustart noch nicht neu bewertet
         self._aux_starting: set[str] = set()  # Klima wird gerade eingeschaltet (klima_start)
+        self._aux_fan_busy: set[str] = set()  # Lüfterstufe wird gerade gesetzt (Boost-Lüfter)
         self._loaded_at: datetime = dt_util.now()
         self._aux_start_failed: dict[str, datetime] = {}  # Einschalten nicht bestätigt -> START_RETRY warten
         self._aux_written: dict[str, float] = {}
@@ -185,7 +187,7 @@ class HeizplanManager:
         self.aux_state = {
             rid: {"active": bool(st.get("active")), "owned": bool(st.get("owned")), "since": st.get("since"),
                   "boost": bool(st.get("boost")), "boost_since": st.get("boost_since"),
-                  "by_boost": bool(st.get("by_boost"))}
+                  "by_boost": bool(st.get("by_boost")), "boost_fan": st.get("boost_fan")}
             for rid, st in (data.get("aux_state") or {}).items() if rid in self.rooms
         }
         # Nach dem Neustart neu bewerten; Wartezeit beginnt neu, laufendes Zuheizen nicht blind beenden
@@ -661,7 +663,7 @@ class HeizplanManager:
                     if hvac == HEAT and (takeover or st["owned"] or st.get("by_boost")):
                         await self._aux_call("climate", "set_hvac_mode", {ATTR_ENTITY_ID: ent, "hvac_mode": RUNNING_OFF})
                         _LOGGER.info("Heizplan: Zuheizen %s aus", ent)
-                    st.update(active=False, owned=False, since=None, by_boost=False)
+                    st.update(active=False, owned=False, since=None, by_boost=False, boost_fan=None)
                     self._aux_written.pop(room_id, None)
                     changed = True
                 else:
@@ -670,6 +672,7 @@ class HeizplanManager:
                     if self._aux_written.get(room_id) != value:
                         if await self._aux_call("climate", "set_temperature", {ATTR_ENTITY_ID: ent, "temperature": value}):
                             self._aux_written[room_id] = value
+                    changed |= self._aux_boost_fan(room_id, room, st, status, now)
                 continue
 
             since = self._aux_demand_since.get(room_id)
@@ -695,7 +698,8 @@ class HeizplanManager:
             if ok:
                 self._aux_start_failed.pop(room_id, None)
                 self._aux_written[room_id] = value
-                st.update(active=True, owned=owned, since=dt_util.now().isoformat(), by_boost=bool(st.get("boost")))
+                st.update(active=True, owned=owned, since=dt_util.now().isoformat(), by_boost=bool(st.get("boost")),
+                          boost_fan="auto")
                 _LOGGER.info("Heizplan: Zuheizen %s an (%s °C)", ent, value)
                 klima = self.hass.states.get(ent)
                 if room.get("aux_fan_mode") and klima is not None:
@@ -706,6 +710,40 @@ class HeizplanManager:
                                 "neuer Versuch in %s min", ent, int(START_RETRY.total_seconds() // 60))
         finally:
             self._aux_starting.discard(room_id)
+            self._schedule_save()
+            async_dispatcher_send(self.hass, SIGNAL_UPDATED)
+
+    def _aux_boost_fan(self, room_id: str, room: dict[str, Any], st: dict[str, Any],
+                       status: dict[str, Any], now: datetime) -> bool:
+        """Boost: erst Auto, nach dem Anlaufen die Boost-Stufe, kurz vor dem Soll wieder Auto."""
+        fan_switch = room.get("aux_fan_switch")
+        if not fan_switch or room_id in self._aux_fan_busy:
+            return False
+        if st.get("boost"):
+            started = dt_util.parse_datetime(st["since"]) if st.get("since") else now
+            want = boost_fan_want(minutes_running=(now - started).total_seconds() / 60,
+                                  target=status.get("target"), current=status.get("current_temp"),
+                                  cfg=self.aux_settings)
+        else:
+            want = "auto" if st.get("boost_fan") not in (None, "auto") else None   # Boost vorbei: zurück auf Auto
+        if want is None or (st.get("boost_fan") or "auto") == want:
+            return False
+        self._aux_fan_busy.add(room_id)
+        self.hass.async_create_task(self._aux_set_boost_fan(room_id, room["aux_climate"], fan_switch, want),
+                                    f"heizplan_boost_fan_{room_id}")
+        return False
+
+    async def _aux_set_boost_fan(self, room_id: str, ent: str, fan_switch: str, want: str) -> None:
+        try:
+            if await klima_set_fan(self.hass, ent, want, self._aux_call, auto_switch=fan_switch):
+                st = self.aux_state.get(room_id)
+                if st is not None and st.get("active"):
+                    st["boost_fan"] = want
+                    _LOGGER.info("Heizplan: Boost %s Lüfter %s", ent, want)
+            else:
+                _LOGGER.warning("Heizplan: Boost %s – Lüfter %s nicht bestätigt", ent, want)
+        finally:
+            self._aux_fan_busy.discard(room_id)
             self._schedule_save()
             async_dispatcher_send(self.hass, SIGNAL_UPDATED)
 

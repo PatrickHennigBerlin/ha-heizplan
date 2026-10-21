@@ -16,6 +16,9 @@ DEFAULT_AUX_SETTINGS: dict[str, Any] = {
     "outside_limit": 10.0, # nur zuheizen, wenn außen kälter (°C) – nur mit Außenfühler
     "takeover": True,      # von Hand eingeschaltete Klima übernehmen
     "boost_max": 180,      # Boost endet spätestens nach so vielen Minuten
+    "boost_fan": "3",      # Boost: Lüfterstufe nach dem Anlaufen ("" = immer Auto)
+    "boost_fan_delay": 3,  # … ab so vielen Minuten nach dem Einschalten (vorher Auto, bis warme Luft kommt)
+    "boost_fan_band": 0.5, # … bis Ist so nah am Soll ist (K), dann wieder Auto
 }
 
 RUNNING_OFF = "off"
@@ -34,6 +37,9 @@ def normalize_aux_settings(cfg: dict[str, Any] | None) -> dict[str, Any]:
         out["wait"] = int(out["wait"])
         out["outside_limit"] = round(float(out["outside_limit"]) * 2) / 2
         out["boost_max"] = int(out["boost_max"])
+        out["boost_fan"] = str(out["boost_fan"] or "")
+        out["boost_fan_delay"] = int(out["boost_fan_delay"])
+        out["boost_fan_band"] = round(float(out["boost_fan_band"]) * 10) / 10
     except (TypeError, ValueError) as err:
         raise AuxError("Zuheizen: Werte müssen Zahlen sein") from err
     out["takeover"] = bool(out["takeover"])
@@ -47,7 +53,29 @@ def normalize_aux_settings(cfg: dict[str, Any] | None) -> dict[str, Any]:
         raise AuxError("Außengrenze: −30 bis 30 °C")
     if not 15 <= out["boost_max"] <= 720:
         raise AuxError("Boost-Höchstdauer: 15 bis 720 min")
+    if out["boost_fan"] not in ("", "1", "2", "3", "4", "5"):
+        raise AuxError("Boost-Lüfterstufe: leer (Auto) oder 1 bis 5")
+    if not 0 <= out["boost_fan_delay"] <= 60:
+        raise AuxError("Boost-Lüfter Verzögerung: 0 bis 60 min")
+    if not 0 <= out["boost_fan_band"] <= 5:
+        raise AuxError("Boost-Lüfter zurück auf Auto: 0 bis 5 K vor dem Soll")
     return out
+
+
+def boost_fan_want(*, minutes_running: float, target: float | None, current: float | None,
+                   cfg: dict[str, Any]) -> str | None:
+    """Lüfter während des Boosts: 'auto' oder die Boost-Stufe. None = nichts vorgeben.
+
+    Erst Auto (die Klima läuft an, bis warme Luft kommt), nach boost_fan_delay min die Boost-Stufe,
+    ab Ist ≥ Soll − boost_fan_band wieder Auto.
+    """
+    if not cfg.get("boost_fan") or target is None or current is None:
+        return None
+    if target - current <= cfg["boost_fan_band"]:
+        return "auto"
+    if minutes_running >= cfg["boost_fan_delay"]:
+        return cfg["boost_fan"]
+    return "auto"
 
 
 def _num(value: Any) -> float | None:

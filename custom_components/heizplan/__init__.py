@@ -249,6 +249,9 @@ def _register_services(hass: HomeAssistant) -> None:
                 vol.Optional("outside_limit"): vol.Coerce(float),
                 vol.Optional("takeover"): cv.boolean,
                 vol.Optional("boost_max"): vol.Coerce(int),
+                vol.Optional("boost_fan"): vol.Any(str, None),
+                vol.Optional("boost_fan_delay"): vol.Coerce(int),
+                vol.Optional("boost_fan_band"): vol.Coerce(float),
             }
         ),
     )

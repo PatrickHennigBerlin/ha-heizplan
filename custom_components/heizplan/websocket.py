@@ -218,6 +218,9 @@ async def ws_update_room(hass, manager, msg):
         vol.Optional("outside_limit"): vol.Coerce(float),
         vol.Optional("takeover"): bool,
         vol.Optional("boost_max"): vol.Coerce(int),
+        vol.Optional("boost_fan"): vol.Any(str, None),
+        vol.Optional("boost_fan_delay"): vol.Coerce(int),
+        vol.Optional("boost_fan_band"): vol.Coerce(float),
     }
 )
 @websocket_api.require_admin
