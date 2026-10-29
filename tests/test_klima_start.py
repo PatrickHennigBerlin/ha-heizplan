@@ -107,3 +107,27 @@ async def test_luefterstufe_erst_auto_aus_dann_stufe(hass, order, monkeypatch):
     assert [s for s, _ in order] == ["switch.turn_off", "climate.set_fan_mode"]
     async_dispatcher_send(hass, "knx_telegram", None, _tg("3/0/9", (4,)))
     assert await task
+
+
+async def test_aus_wartet_auf_bestaetigung(hass, order, monkeypatch):
+    hass.states.async_set(ENT, "heat", {"supported_features": 393})
+    monkeypatch.setattr(klima_start, "knx_state_addresses", lambda h, e: ("3/0/7", "3/0/4"))
+    monkeypatch.setattr(klima_start, "WAIT_SPONTANEOUS", 0.5)
+    task = hass.async_create_task(klima_start.async_stop_climate(hass, ENT, await _call(hass)))
+    await asyncio.sleep(0.05)
+    async_dispatcher_send(hass, "knx_telegram", None, _tg("3/0/7", 1))   # noch EIN: zählt nicht
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    async_dispatcher_send(hass, "knx_telegram", None, _tg("3/0/7", 0))
+    assert await task
+    assert [s for s, _ in order] == ["climate.set_hvac_mode"]
+    assert order[0][1]["hvac_mode"] == "off"
+
+
+async def test_aus_ohne_bestaetigung_liest_und_wiederholt(hass, order, monkeypatch):
+    hass.states.async_set(ENT, "heat", {"supported_features": 393})
+    monkeypatch.setattr(klima_start, "knx_state_addresses", lambda h, e: ("3/0/7", None))
+    monkeypatch.setattr(klima_start, "WAIT_SPONTANEOUS", 0.05)
+    monkeypatch.setattr(klima_start, "WAIT_READ", 0.05)
+    assert not await klima_start.async_stop_climate(hass, ENT, await _call(hass))
+    assert [s for s, _ in order] == ["climate.set_hvac_mode", "knx.read"] * 3 + ["homeassistant.update_entity"]

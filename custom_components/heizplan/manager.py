@@ -38,7 +38,7 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
-from .klima_start import async_set_fan as klima_set_fan, async_start_climate
+from .klima_start import async_set_fan as klima_set_fan, async_start_climate, async_stop_climate
 from .season import (
     DEFAULT_SEASON_AUTO,
     SEASON_DATES,
@@ -76,6 +76,9 @@ from .plan import (
 _LOGGER = logging.getLogger(__name__)
 START_RETRY = timedelta(minutes=5)   # nach unbestätigtem Einschalten so lange warten
 STARTUP_GRACE = timedelta(minutes=2)   # nach dem Start: KNX-Klimas zeigen „aus“, bis ihr Status gelesen ist
+STOP_RETRY = timedelta(minutes=2)   # Ausschalten nicht bestätigt -> so lange warten, dann erneut
+STOP_ROUNDS = 3                     # so viele Runden (je bis zu 3 Versuche), dann Meldung und aufgeben
+EVENT_STOP_FAILED = "heizplan_klima_aus_fehlgeschlagen"
 
 
 def room_id_from_entity(entity_id: str) -> str:
@@ -127,6 +130,8 @@ class HeizplanManager:
         self._aux_fan_busy: set[str] = set()  # Lüfterstufe wird gerade gesetzt (Boost-Lüfter)
         self._loaded_at: datetime = dt_util.now()
         self._aux_start_failed: dict[str, datetime] = {}  # Einschalten nicht bestätigt -> START_RETRY warten
+        self._aux_stopping: set[str] = set()  # Klima wird gerade ausgeschaltet (wartet auf Bestätigung)
+        self._aux_stop_pending: dict[str, dict[str, Any]] = {}  # AUS nicht bestätigt: {ent, at, rounds}
         self._aux_written: dict[str, float] = {}
 
     # ------------------------------------------------------------------ Optionen
@@ -608,11 +613,19 @@ class HeizplanManager:
                 status = self.room_status(room_id, now)
             except (KeyError, PlanError):
                 continue
-            if room_id in self._aux_starting:
-                continue  # Klima wird gerade eingeschaltet (wartet auf Bestätigung)
+            if room_id in self._aux_starting or room_id in self._aux_stopping:
+                continue  # Klima wird gerade ein-/ausgeschaltet (wartet auf Bestätigung)
             st = self.aux_state.setdefault(room_id, {"active": False, "owned": False, "since": None})
             klima = self.hass.states.get(ent)
             hvac = klima.state if klima is not None else None
+            pending = self._aux_stop_pending.get(room_id)
+            if pending is not None:
+                if st.get("boost") or hvac not in (HEAT, RUNNING_OFF, None, "unavailable", "unknown"):
+                    self._aux_stop_pending.pop(room_id, None)   # neuer Boost oder von Hand umgestellt
+                else:
+                    if now - pending["at"] >= STOP_RETRY:
+                        self._aux_begin_stop(room_id, ent)       # AUS erneut senden und bestätigen lassen
+                    continue
             if hvac in (None, "unavailable", "unknown") or self._boost_uncertain(room):
                 continue  # Klima, Heizperiode oder Thermostat (noch) nicht erreichbar (z. B. Neustart): nichts entscheiden
             if st.get("active") and hvac != HEAT and now - self._loaded_at < STARTUP_GRACE:
@@ -661,8 +674,9 @@ class HeizplanManager:
             if st["active"]:
                 if must_off:
                     if hvac == HEAT and (takeover or st["owned"] or st.get("by_boost")):
-                        await self._aux_call("climate", "set_hvac_mode", {ATTR_ENTITY_ID: ent, "hvac_mode": RUNNING_OFF})
-                        _LOGGER.info("Heizplan: Zuheizen %s aus", ent)
+                        # AUS mit Bestätigung des Geräts (klima_start), im Hintergrund
+                        self._aux_stop_pending[room_id] = {"ent": ent, "at": now, "rounds": 0}
+                        self._aux_begin_stop(room_id, ent)
                     st.update(active=False, owned=False, since=None, by_boost=False, boost_fan=None)
                     self._aux_written.pop(room_id, None)
                     changed = True
@@ -711,6 +725,33 @@ class HeizplanManager:
         finally:
             self._aux_starting.discard(room_id)
             self._schedule_save()
+            async_dispatcher_send(self.hass, SIGNAL_UPDATED)
+
+    def _aux_begin_stop(self, room_id: str, ent: str) -> None:
+        self._aux_stopping.add(room_id)
+        self.hass.async_create_task(self._aux_stop(room_id, ent), f"heizplan_klima_stop_{room_id}")
+
+    async def _aux_stop(self, room_id: str, ent: str) -> None:
+        try:
+            ok = await async_stop_climate(self.hass, ent, self._aux_call, RUNNING_OFF)
+            pending = self._aux_stop_pending.get(room_id)
+            if ok:
+                self._aux_stop_pending.pop(room_id, None)
+                _LOGGER.info("Heizplan: Zuheizen %s aus (bestätigt)", ent)
+            elif pending is not None:
+                pending["rounds"] += 1
+                pending["at"] = dt_util.now()
+                if pending["rounds"] >= STOP_ROUNDS:
+                    self._aux_stop_pending.pop(room_id, None)
+                    room = self.rooms.get(room_id) or {}
+                    _LOGGER.error("Heizplan: %s lässt sich nicht ausschalten (%s Runden) – aufgegeben", ent, STOP_ROUNDS)
+                    self.hass.bus.async_fire(EVENT_STOP_FAILED, {
+                        "entity_id": ent, "raum": room.get("name") or room_id, "runden": STOP_ROUNDS})
+                else:
+                    _LOGGER.warning("Heizplan: %s AUS nicht bestätigt – neuer Versuch in %s min",
+                                    ent, int(STOP_RETRY.total_seconds() // 60))
+        finally:
+            self._aux_stopping.discard(room_id)
             async_dispatcher_send(self.hass, SIGNAL_UPDATED)
 
     def _aux_boost_fan(self, room_id: str, room: dict[str, Any], st: dict[str, Any],

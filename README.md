@@ -90,6 +90,9 @@ data:
   `target_temp_step` des Klimageräts gebracht), danach Lüfterstufe bzw. Lüfter-Schalter.
 - **Aus**, sobald **Ist ≥ Soll − Abschaltabstand** (Standard 0,5 K) oder eine Einschaltbedingung wegfällt –
   nur, wenn die Klima gerade auf `heat` steht. Dazwischen bleibt der Zustand (Hysterese).
+- **Aus mit Bestätigung:** Bei KNX-Klimas wartet Heizplan, bis das Gerät AUS auf seiner Status-Adresse meldet
+  (sonst lesen, bis zu 3 Versuche). Bleibt die Bestätigung aus, nach 2 min erneut – insgesamt 3 Runden; dann
+  Event `heizplan_klima_aus_fehlgeschlagen` (`entity_id`, `raum`) für eine Push-Meldung.
 - **Soll folgt:** Ändert sich der Raum-Soll (Plan, Override, Abwesend), wird der Klima-Soll nachgezogen.
 - **Klima übernehmen** (Standard an): Auch eine laufende Klima (z. B. Kühlen/Lüften) wird bei Bedarf auf Heizen
   gestellt und später ausgeschaltet. Aus: nur einschalten, wenn die Klima aus ist, und nur ausschalten, was

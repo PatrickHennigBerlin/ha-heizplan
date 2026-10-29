@@ -11,6 +11,9 @@ zuerst den Modus und erst danach EIN. Deshalb hier:
 4. climate.set_temperature (Soll)
 5. Lüfter auf Auto (Schalter „Lüfter Auto“, falls angegeben) – ebenso bestätigt über dessen Status-Adresse
 
+Ausschalten (async_stop_climate) ebenso: AUS senden, auf AUS auf der Status-Adresse warten, ggf. lesen und
+wiederholen.
+
 Die Status-Adressen kommen aus der KNX-Klima-Entität selbst. Ist das Gerät keine KNX-Klima (oder die Adressen
 sind nicht zu ermitteln), wird ohne Bestätigung in derselben Reihenfolge geschaltet.
 """
@@ -170,6 +173,27 @@ async def async_start_climate(hass: HomeAssistant, entity_id: str, hvac_mode: st
         else:
             await _fan()
     return True
+
+
+async def async_stop_climate(hass: HomeAssistant, entity_id: str, call: Call, off_mode: str = "off") -> bool:
+    """Klima ausschalten und auf die Bestätigung AUS warten (lesen, bis zu ATTEMPTS-mal wiederholen).
+
+    Hintergrund 29.10.2026 Küche: ein einzelnes AUS kam nicht an, HA zeigte „aus“, das Gerät heizte weiter.
+    True, wenn das Gerät AUS bestätigt hat (oder keine Status-Adresse bekannt ist und der Aufruf durchging).
+    """
+    on_ga, _ = knx_state_addresses(hass, entity_id)
+    data = {ATTR_ENTITY_ID: entity_id}
+
+    async def _off() -> bool:
+        return await call("climate", "set_hvac_mode", {**data, "hvac_mode": off_mode})
+
+    if not on_ga:
+        return await _off()
+    if await _confirm(hass, on_ga, 0, _off, call, f"{entity_id} AUS"):
+        return True
+    _LOGGER.error("Klima-Aus: %s meldet nach %s Versuchen kein AUS", entity_id, ATTEMPTS)
+    await call("homeassistant", "update_entity", data)   # HA-Anzeige wieder auf den Gerätezustand
+    return False
 
 
 def knx_fan_state_address(hass: HomeAssistant, entity_id: str) -> str | None:

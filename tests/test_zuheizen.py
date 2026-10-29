@@ -463,3 +463,60 @@ async def test_boost_luefter_stufen(hass, clock, monkeypatch):
     await env.at(6)
     await hass.async_block_till_done()
     assert calls == ["3", "auto"]
+
+
+async def test_boost_ende_aus_wird_bestaetigt_und_wiederholt(hass, clock, monkeypatch):
+    """29.10.2026 Küche: AUS kam nicht an. Jetzt: AUS bestätigen lassen, sonst wiederholen, dann melden."""
+    from homeassistant.helpers.dispatcher import async_dispatcher_send
+    from custom_components.heizplan import klima_start, manager as mgr
+
+    env = await _setup(hass, clock)
+    reads = async_mock_service(hass, "knx", "read")
+    async_mock_service(hass, "homeassistant", "update_entity")
+    events = []
+    hass.bus.async_listen(mgr.EVENT_STOP_FAILED, events.append)
+    env.ist(21.5)
+    sw = "switch.heizplan_boost_mit_warmepumpe_wohnzimmer"
+    ent = next(e for e in hass.data["entity_components"]["switch"].entities if e.entity_id == sw)
+    await ent.async_turn_on()
+    await hass.async_block_till_done()
+    env.klima("heat", temperature=22)
+    await env.at(5)
+
+    # ab jetzt KNX-Klima mit Status-Adresse; das Gerät bestätigt AUS nicht
+    monkeypatch.setattr(klima_start, "knx_state_addresses", lambda h, e: ("3/0/7", None))
+    monkeypatch.setattr(klima_start, "WAIT_SPONTANEOUS", 0.02)
+    monkeypatch.setattr(klima_start, "WAIT_READ", 0.02)
+    env.ist(22.0)
+    await env.at(10)                                   # Boost-Ende -> AUS, 3 Versuche
+    assert len(env.klima_calls("off")) == 3 and len(reads) == 3
+    assert hass.states.get(sw).state == "off"
+    await env.at(11)                                   # vor STOP_RETRY nichts
+    assert len(env.klima_calls("off")) == 3
+    await env.at(12)                                   # 2. Runde
+    assert len(env.klima_calls("off")) == 6 and not events
+    await env.at(14)                                   # 3. Runde -> aufgegeben, Meldung
+    assert len(env.klima_calls("off")) == 9
+    assert events and events[0].data["entity_id"] == "climate.klima_wz"
+    await env.at(20)
+    assert len(env.klima_calls("off")) == 9            # nicht endlos
+
+    # zweiter Boost: diesmal bestätigt das Gerät AUS -> genau ein AUS, keine Wiederholung
+    monkeypatch.setattr(klima_start, "WAIT_SPONTANEOUS", 0.5)
+    env.ist(21.5)
+    monkeypatch.setattr(klima_start, "knx_state_addresses", lambda h, e: (None, None))
+    await ent.async_turn_on()
+    await hass.async_block_till_done()
+    env.klima("heat", temperature=22)
+    await env.at(25)
+    monkeypatch.setattr(klima_start, "knx_state_addresses", lambda h, e: ("3/0/7", None))
+    env.ist(22.0)
+    task = hass.async_create_task(env.at(30))
+    import asyncio
+    await asyncio.sleep(0.05)
+    async_dispatcher_send(hass, "knx_telegram", None, {"destination": "3/0/7", "direction": "Incoming",
+                                                       "telegramtype": "GroupValueWrite", "payload": 0})
+    await task
+    assert len(env.klima_calls("off")) == 10
+    await env.at(33)
+    assert len(env.klima_calls("off")) == 10
