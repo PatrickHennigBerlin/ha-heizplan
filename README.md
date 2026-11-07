@@ -133,3 +133,36 @@ nach der Höchstdauer (`number.heizplan_boost_mit_klima_hochstdauer`, Standard 1
 **Lüfter beim Boost** (wenn ein Lüfter-Auto-Schalter hinterlegt ist): erst Auto, während die Klima anläuft; nach
 `boost_fan_delay` Minuten (Standard 3) die Stufe `boost_fan` (Standard 3); ab Ist ≥ Soll − `boost_fan_band`
 (Standard 0,5 K) wieder Auto. Einstellbar über `heizplan.set_aux` (`boost_fan: ""` = immer Auto).
+
+## Lüften
+
+Je Heizkörper-Raum gibt es `switch.heizplan_luften_<raum>` (und in der Karte den Knopf „Lüften“). Einschalten = die
+Heizung im Raum bleibt für die Lüften-Dauer aus (`number.heizplan_luften_dauer`, Standard 60 min), danach gilt wieder
+der Plan. Erneut drücken beendet das Lüften sofort. Während des Lüftens
+
+- schreibt Heizplan keinen Sollwert und stellt den Regler **nicht** auf Komfort zurück,
+- gibt es kein Zuheizen und keinen Boost (eine von Heizplan gestartete Klima geht aus),
+- ist ein verknüpfter An/Aus-Raum (z. B. Fußbodenheizung, `vent_with`) aus.
+
+Nach dem Lüften schreibt Heizplan Sollwert und Komfort neu.
+
+**Lüften-Ausgänge** (`vent_outputs`, beliebige `switch`/`input_boolean`): sind während des Lüftens an, sonst aus, und
+werden alle 15 min erneut gesendet. Typisch: ein Schalter auf dem Fensterkontakt-Eingang des Thermostats (dann regelt
+der Thermostat selbst auf Frostschutz) und – bei Klimageräten mit „Fenster offen“-Funktion – ein (ggf. invertierter)
+Schalter auf deren Fenster-Eingang. Wird ein Ausgang **von außen** geschaltet (Taster, Touch-Panel), startet bzw. endet
+das Lüften entsprechend; die anderen Ausgänge des Raums ziehen nach.
+
+```yaml
+action: heizplan.update_room
+data:
+  room: bad
+  vent_outputs: [switch.luften_bad_fenster, switch.klima_bad_fenster]
+---
+action: heizplan.update_room
+data:
+  room: switch.fussbodenheizung
+  vent_with: bad
+```
+
+Dienste: `heizplan.start_ventilation` (`room`, optional `minutes`), `heizplan.stop_ventilation` (`room`). Das Lüften
+übersteht einen Neustart (Endzeit gespeichert).
