@@ -126,6 +126,14 @@
         "aux_enabled": {
           "name": "Zuheizen erlaubt",
           "description": ""
+        },
+        "vent_outputs": {
+          "name": "Lüften-Ausgänge",
+          "description": "Während des Lüftens an, z. B. ein Fensterkontakt-Schalter. Wird einer davon von außen geschaltet, startet bzw. endet das Lüften."
+        },
+        "vent_with": {
+          "name": "Lüftet mit Raum",
+          "description": "An/Aus-Raum (z. B. Fußbodenheizung), der aus ist, solange dieser Raum lüftet."
         }
       }
     },
@@ -208,6 +216,30 @@
         "on": {
           "name": "An",
           "description": "aus = Boost abbrechen"
+        }
+      }
+    },
+    "start_ventilation": {
+      "name": "Lüften starten",
+      "description": "Heizung im Raum bleibt für die Lüften-Dauer aus; Ausgänge (z. B. Fensterkontakt) werden eingeschaltet.",
+      "fields": {
+        "room": {
+          "name": "Raum",
+          "description": "Raum-ID, Entität oder Name"
+        },
+        "minutes": {
+          "name": "Minuten",
+          "description": "Dauer (Standard: Einstellung „Lüften Dauer“)"
+        }
+      }
+    },
+    "stop_ventilation": {
+      "name": "Lüften beenden",
+      "description": "Lüften sofort beenden; danach gilt wieder der Plan.",
+      "fields": {
+        "room": {
+          "name": "Raum",
+          "description": "Raum-ID, Entität oder Name"
         }
       }
     }

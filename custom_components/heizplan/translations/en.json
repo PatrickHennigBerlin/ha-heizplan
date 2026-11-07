@@ -126,6 +126,14 @@
         "aux_enabled": {
           "name": "Auxiliary heating allowed",
           "description": ""
+        },
+        "vent_outputs": {
+          "name": "Ventilation outputs",
+          "description": "Switched on while ventilating, e.g. a window-contact switch. Switching one of them from outside starts/stops ventilation."
+        },
+        "vent_with": {
+          "name": "Ventilate with room",
+          "description": "On/off room (e.g. floor heating) that is switched off while this room ventilates."
         }
       }
     },
@@ -208,6 +216,30 @@
         "on": {
           "name": "On",
           "description": "off = cancel boost"
+        }
+      }
+    },
+    "start_ventilation": {
+      "name": "Start ventilation",
+      "description": "Heating in the room stays off for the ventilation time; outputs (e.g. window contact) are switched on.",
+      "fields": {
+        "room": {
+          "name": "Room",
+          "description": "Room id, entity or name"
+        },
+        "minutes": {
+          "name": "Minutes",
+          "description": "Duration (default: setting 'Ventilation duration')"
+        }
+      }
+    },
+    "stop_ventilation": {
+      "name": "Stop ventilation",
+      "description": "End ventilation now; the plan applies again.",
+      "fields": {
+        "room": {
+          "name": "Room",
+          "description": "Room id, entity or name"
         }
       }
     }
