@@ -9,7 +9,7 @@ const DAY_LONG = { mon: "Montag", tue: "Dienstag", wed: "Mittwoch", thu: "Donner
 const SNAP = 15; // Minuten
 const ALL = "__all__";
 const PRESET_LABEL = { building_protection: "Frostschutz", standby: "Standby", economy: "Nacht" };
-const SOURCE_LABEL = { plan: "Plan", away: "Abwesend", override: "Manuell", inactive: "Inaktiv" };
+const SOURCE_LABEL = { plan: "Plan", away: "Abwesend", override: "Manuell", inactive: "Inaktiv", vent: "Lüften" };
 
 const toMin = (s) => { const [h, m] = s.split(":").map(Number); return h * 60 + m; };
 const fmtMin = (m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
@@ -273,8 +273,11 @@ class HeizplanCard extends HTMLElement {
         const diff = ist - s.target;
         state = diff < -0.5 ? "cold" : diff > 0.5 ? "warm" : "ok";
       }
+      const hm = (iso) => new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+      const v = s.vent || {};
       const srcText = s.source === "override" && s.override
-        ? `Manuell bis ${new Date(s.override.until).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}`
+        ? `Manuell bis ${hm(s.override.until)}`
+        : s.source === "vent" && v.until ? `Lüften bis ${hm(v.until)}`
         : SOURCE_LABEL[s.source] || s.source;
       const istHtml = sw ? (ist ? "an" : "aus") : fmtT(ist);
       const sollHtml = s.target === null ? "–" : sw ? (s.target ? "An" : "Aus") : fmtT(s.target);
@@ -295,12 +298,15 @@ class HeizplanCard extends HTMLElement {
             ${s.valve !== null && s.valve !== undefined ? `<div><div class="lbl">Ventil</div><div class="mid">${Math.round(s.valve)} %</div></div>` : ""}
           </div>
           ${this._miniBar(dayBlocks(r.plan[tk]), nowMin)}
-          ${!sw && s.source !== "inactive" && s.climate_preset && s.climate_preset !== "comfort" ? `<div class="warn">Regler steht auf ${esc(PRESET_LABEL[s.climate_preset] || s.climate_preset)} – wird automatisch auf Komfort zurückgestellt</div>` : ""}
+          ${!sw && s.source !== "inactive" && s.source !== "vent" && s.climate_preset && s.climate_preset !== "comfort" ? `<div class="warn">Regler steht auf ${esc(PRESET_LABEL[s.climate_preset] || s.climate_preset)} – wird automatisch auf Komfort zurückgestellt</div>` : ""}
           <div class="next">${esc(s.source === "plan" ? this._nextText(s) : s.source === "inactive" ? (sw ? "außerhalb der Saison" : "") : `Plan: ${valueText(s.plan_temp)}`)}</div>
           <div class="actions">
             ${actions}
             ${s.source === "override" ? `<button class="txt" data-clear="${r.id}">zurück zum Plan</button>` : sw ? "" : `<span class="hint">± für 2 Std.</span>`}
           </div>
+          ${!sw ? (v.active && v.own
+            ? `<button class="vent on" data-vent="${r.id}" data-on="0" title="Lüften beenden – danach gilt wieder der Plan"><ha-icon icon="mdi:window-open-variant"></ha-icon>Lüften bis ${hm(v.until)} · beenden</button>`
+            : `<button class="vent" data-vent="${r.id}" data-on="1" title="Heizung im Raum für die Lüften-Dauer aus (Fenster auf)"><ha-icon icon="mdi:window-closed-variant"></ha-icon>Lüften</button>`) : ""}
           ${s.aux_heating && !sw ? (s.aux_heating.boost
             ? `<button class="boost on" data-boost="${r.id}" data-on="0" title="Boost abbrechen"><ha-icon icon="mdi:rocket-launch"></ha-icon>Boost läuft – bis ${fmtT(s.target)} °C · abbrechen</button>`
             : `<button class="boost" data-boost="${r.id}" data-on="1" ${s.source === "inactive" || (s.current_temp != null && s.target != null && s.current_temp >= s.target) ? "disabled" : ""} title="${s.current_temp != null && s.target != null && s.current_temp >= s.target ? "Soll ist schon erreicht" : "Die Wärmepumpe (Klima) heizt mit, bis der Soll erreicht ist, dann geht sie wieder aus"}"><ha-icon icon="mdi:rocket-launch-outline"></ha-icon>Boost mit Wärmepumpe</button>`) : ""}
@@ -573,6 +579,8 @@ class HeizplanCard extends HTMLElement {
     }));
     $("[data-ovr-on]").forEach((el) => el.addEventListener("click", () =>
       this._call({ type: "heizplan/set_override", room_id: el.dataset.ovrOn, on: el.dataset.val === "1", minutes: 120 })));
+    $("[data-vent]").forEach((el) => el.addEventListener("click", () =>
+      this._call({ type: "heizplan/set_vent", room_id: el.dataset.vent, on: el.dataset.on === "1" }).catch(() => {})));
     $("[data-boost]").forEach((el) => el.addEventListener("click", () =>
       this._call({ type: "heizplan/set_boost", room_id: el.dataset.boost, on: el.dataset.on === "1" }).catch(() => {})));
     $("[data-clear]").forEach((el) => el.addEventListener("click", () => this._call({ type: "heizplan/clear_override", room_id: el.dataset.clear })));
@@ -773,6 +781,11 @@ const STYLE = `
   .badge.override { background: rgba(255,152,0,.25); }
   .badge.away { background: rgba(33,150,243,.2); }
   .badge.inactive { opacity:.7; }
+  .badge.vent { background: rgba(0,150,136,.25); }
+  .vent { align-self:flex-start; display:inline-flex; align-items:center; gap:5px; border:1px dashed rgba(0,150,136,.7); background:none;
+    color: var(--primary-text-color); border-radius:14px; padding:3px 10px; font-size:.8em; cursor:pointer; }
+  .vent ha-icon { --mdc-icon-size:16px; width:16px; height:16px; }
+  .vent.on { border-style:solid; background: rgba(0,150,136,.15); font-weight:600; }
   .temps { display:flex; gap:18px; align-items:flex-end; }
   .lbl { font-size:.75em; color:var(--secondary-text-color); }
   .big { font-size:1.6em; font-weight:500; }
@@ -853,7 +866,7 @@ const STYLE = `
     .tab, .chip, .seg { white-space:nowrap; flex:none; }
     .grid { grid-template-columns: 1fr; gap: 8px; }
     .tile { display:grid; grid-template-columns: 1fr auto; column-gap:8px; row-gap:6px; padding:8px 10px; }
-    .tile > .trow, .tile > .bar, .tile > .warn, .tile > .next, .tile > .boost { grid-column: 1 / -1; }
+    .tile > .trow, .tile > .bar, .tile > .warn, .tile > .next, .tile > .boost, .tile > .vent { grid-column: 1 / -1; }
     .tile > .temps { grid-column: 1; gap:14px; }
     .tile > .actions { grid-column: 2; grid-row: 2; align-self:end; }
     .tile.switch > .actions { flex-direction:column; align-items:flex-end; gap:0; }
