@@ -87,6 +87,14 @@ update_room:
     aux_enabled:
       selector:
         boolean:
+    vent_outputs:
+      selector:
+        entity:
+          domain: [switch, input_boolean]
+          multiple: true
+    vent_with:
+      selector:
+        text:
 set_season_auto:
   fields:
     mode:
@@ -184,3 +192,23 @@ boost:
       default: true
       selector:
         boolean:
+start_ventilation:
+  fields:
+    room:
+      required: true
+      example: wohnzimmer
+      selector:
+        text:
+    minutes:
+      selector:
+        number:
+          min: 1
+          max: 480
+          unit_of_measurement: min
+stop_ventilation:
+  fields:
+    room:
+      required: true
+      example: wohnzimmer
+      selector:
+        text:

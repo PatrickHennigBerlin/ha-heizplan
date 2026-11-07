@@ -240,6 +240,15 @@ async def ws_set_boost(hass, manager, msg):
 
 
 @websocket_api.websocket_command(
+    {vol.Required("type"): "heizplan/set_vent", vol.Required("room_id"): str, vol.Required("on"): bool}
+)
+@websocket_api.async_response
+@_wrap
+async def ws_set_vent(hass, manager, msg):
+    await manager.async_set_vent(msg["room_id"], msg["on"])
+
+
+@websocket_api.websocket_command(
     {vol.Required("type"): "heizplan/remove_room", vol.Required("room_id"): str}
 )
 @websocket_api.require_admin
@@ -295,6 +304,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
         ws_update_room,
         ws_set_aux,
         ws_set_boost,
+        ws_set_vent,
         ws_remove_room,
         ws_set_season_auto,
         ws_season_check,

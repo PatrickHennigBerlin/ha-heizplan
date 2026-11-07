@@ -22,6 +22,8 @@ async def async_setup_entry(
     manager: HeizplanManager = hass.data[DOMAIN][entry.entry_id]
     entities: list[SwitchEntity] = [HeizplanAuxTakeover(manager)]
     for rid, room in manager.rooms.items():
+        if room_kind(room) == KIND_CLIMATE:
+            entities.append(HeizplanVentSwitch(manager, rid))
         if room.get("aux_climate") and room_kind(room) == KIND_CLIMATE:
             entities += [HeizplanAuxRoomSwitch(manager, rid), HeizplanBoostSwitch(manager, rid)]
     async_add_entities(entities)
@@ -108,3 +110,40 @@ class HeizplanBoostSwitch(HeizplanEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.manager.async_set_boost(self.room_id, False)
+
+
+class HeizplanVentSwitch(HeizplanEntity, SwitchEntity):
+    """Lüften: an = Heizung im Raum für die Lüften-Dauer aus (Ausgänge wie Fensterkontakt an), aus = beenden."""
+
+    _attr_icon = "mdi:window-open-variant"
+
+    def __init__(self, manager: HeizplanManager, room_id: str) -> None:
+        super().__init__(manager)
+        self.room_id = room_id
+        self._attr_unique_id = f"{manager.entry.entry_id}_{room_id}_lueften"
+        self._attr_name = f"Lüften {manager.rooms[room_id].get('name', room_id)}"
+
+    @property
+    def available(self) -> bool:
+        return self.room_id in self.manager.rooms
+
+    def _vent(self) -> dict[str, Any]:
+        from homeassistant.util import dt as dt_util
+        return self.manager.vent_status(self.room_id, dt_util.now())
+
+    @property
+    def is_on(self) -> bool:
+        v = self._vent()
+        return bool(v["active"] and v["own"])
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        v = self._vent()
+        return {"bis": v["until"] if v["own"] else None, "seit": v["since"] if v["own"] else None,
+                "ausgaenge": v["outputs"]}
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.manager.async_set_vent(self.room_id, True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.manager.async_set_vent(self.room_id, False)

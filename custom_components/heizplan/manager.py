@@ -26,6 +26,7 @@ from .const import (
     DEFAULT_AWAY_TEMP,
     DEFAULT_COMFORT_PRESET,
     DEFAULT_TEMP,
+    DEFAULT_VENT_SETTINGS,
     MODE_AWAY,
     MODE_OFF,
     MODE_PLAN,
@@ -35,8 +36,10 @@ from .const import (
     SOURCE_INACTIVE,
     SOURCE_OVERRIDE,
     SOURCE_PLAN,
+    SOURCE_VENT,
     STORAGE_KEY,
     STORAGE_VERSION,
+    VENT_RESEND,
 )
 from .klima_start import async_set_fan as klima_set_fan, async_start_climate, async_stop_climate
 from .season import (
@@ -93,6 +96,17 @@ def room_kind(room: dict[str, Any]) -> str:
     return room.get("kind") or kind_for_entity(room["climate"])
 
 
+def normalize_vent_settings(cfg: dict[str, Any] | None) -> dict[str, Any]:
+    out = {**DEFAULT_VENT_SETTINGS, **(cfg or {})}
+    try:
+        out["duration"] = int(out["duration"])
+    except (TypeError, ValueError) as err:
+        raise ValueError("Lüften-Dauer muss eine Zahl sein") from err
+    if not 5 <= out["duration"] <= 480:
+        raise ValueError("Lüften-Dauer: 5 bis 480 min")
+    return out
+
+
 def fallback_for(kind: str) -> Any:
     return False if kind == KIND_SWITCH else DEFAULT_TEMP
 
@@ -133,6 +147,10 @@ class HeizplanManager:
         self._aux_stopping: set[str] = set()  # Klima wird gerade ausgeschaltet (wartet auf Bestätigung)
         self._aux_stop_pending: dict[str, dict[str, Any]] = {}  # AUS nicht bestätigt: {ent, at, rounds}
         self._aux_written: dict[str, float] = {}
+        # Lüften: je Raum {until}; Ausgänge (z. B. Fensterkontakt-Schalter) werden an/aus geschaltet
+        self.vent_settings: dict[str, Any] = dict(DEFAULT_VENT_SETTINGS)
+        self.vent_state: dict[str, dict[str, Any]] = {}
+        self._vent_last_sync: datetime | None = None
 
     # ------------------------------------------------------------------ Optionen
     @property
@@ -195,6 +213,16 @@ class HeizplanManager:
                   "by_boost": bool(st.get("by_boost")), "boost_fan": st.get("boost_fan")}
             for rid, st in (data.get("aux_state") or {}).items() if rid in self.rooms
         }
+        try:
+            self.vent_settings = normalize_vent_settings(data.get("vent_settings"))
+        except ValueError as err:
+            _LOGGER.warning("Heizplan: Lüften-Einstellungen zurückgesetzt (%s)", err)
+            self.vent_settings = dict(DEFAULT_VENT_SETTINGS)
+        self.vent_state = {
+            rid: {"until": st.get("until"), "since": st.get("since")}
+            for rid, st in (data.get("vent_state") or {}).items()
+            if rid in self.rooms and st.get("until")
+        }
         # Nach dem Neustart neu bewerten; Wartezeit beginnt neu, laufendes Zuheizen nicht blind beenden
         self._aux_fresh = {rid for rid, st in self.aux_state.items() if st["active"]}
         # Boost überlebt einen Neustart (gespeichert), Höchstdauer zählt weiter ab boost_since
@@ -210,6 +238,8 @@ class HeizplanManager:
             "season_last": self.season_last,
             "aux_settings": self.aux_settings,
             "aux_state": self.aux_state,
+            "vent_settings": self.vent_settings,
+            "vent_state": self.vent_state,
         }
 
     @callback
@@ -231,6 +261,11 @@ class HeizplanManager:
         self._unsubs.append(
             async_track_time_change(self.hass, self._season_tick, hour=[0, 6, 18], minute=[5], second=[30])
         )
+        outputs = sorted({o for room in self.rooms.values() for o in (room.get("vent_outputs") or [])})
+        if outputs:
+            self._unsubs.append(
+                async_track_state_change_event(self.hass, outputs, self._vent_output_changed)
+            )
         if not self.hass.is_running:
             # HA-Start (z. B. nach Stromausfall): Regler einmalig auf Komfort, auch aus Frostschutz
             self._restore_pending = set(self.rooms)
@@ -391,9 +426,15 @@ class HeizplanManager:
                 except ValueError:
                     status["valve"] = None
         ovr = self._override_active(room_id, now)
+        vent_room = self._vent_room_for(room_id, now)
+        status["vent"] = self.vent_status(room_id, now)
         if not self.room_active(room, now) or self.mode == MODE_OFF:
             status["target"] = None
             status["source"] = SOURCE_INACTIVE
+        elif vent_room is not None:
+            # Lüften: Heizkörper nicht beschreiben (Fensterkontakt/Frostschutz wirkt), An/Aus-Räume aus
+            status["target"] = False if kind == KIND_SWITCH else None
+            status["source"] = SOURCE_VENT
         elif ovr:
             value = bool(ovr["on"]) if kind == KIND_SWITCH else float(ovr["temp"])
             status["target"] = value
@@ -440,6 +481,8 @@ class HeizplanManager:
             if self._override_active(room_id, now) is None:
                 self.overrides.pop(room_id, None)
                 changed = True
+        if await self._vent_apply(now):
+            changed = True
         for room_id in list(self.rooms):
             try:
                 status = self.room_status(room_id, now)
@@ -552,7 +595,7 @@ class HeizplanManager:
         room = self.rooms[room_id]
         enabled = bool(room.get("aux_climate")) and room.get("aux_enabled", True)
         ok = outside_ok(bool(self.aux_outside_entity), self._outside_value(), self.aux_settings["outside_limit"])
-        target = status["target"] if status.get("source") != SOURCE_INACTIVE else None
+        target = status["target"] if status.get("source") not in (SOURCE_INACTIVE, SOURCE_VENT) else None
         want_on, must_off = conditions(enabled=enabled, target=target, current=status.get("current_temp"),
                                        outside_is_ok=ok, settings=self.aux_settings)
         return enabled, want_on, must_off
@@ -635,7 +678,7 @@ class HeizplanManager:
             # Boost: von Hand angefordert – heizt ohne Wartezeit/Abweichung/Außengrenze bis Ist ≥ Soll
             boost_ended = False
             if st.get("boost"):
-                target = status["target"] if status.get("source") != SOURCE_INACTIVE else None
+                target = status["target"] if status.get("source") not in (SOURCE_INACTIVE, SOURCE_VENT) else None
                 b_on, b_off = boost_conditions(target=target, current=status.get("current_temp"))
                 b_start = dt_util.parse_datetime(st["boost_since"]) if st.get("boost_since") else now
                 if b_off or now - b_start >= timedelta(minutes=self.aux_settings["boost_max"]):
@@ -822,6 +865,131 @@ class HeizplanManager:
         self.rooms[room_id]["aux_enabled"] = bool(enabled)
         await self._changed()
 
+    # ------------------------------------------------------------------ Lüften
+    def _vent_until(self, room_id: str, now: datetime) -> datetime | None:
+        st = self.vent_state.get(room_id)
+        until = dt_util.parse_datetime(st["until"]) if st and st.get("until") else None
+        return until if until is not None and until > now else None
+
+    def _vent_room_for(self, room_id: str, now: datetime) -> str | None:
+        """Raum, dessen Lüften hier gilt: der Raum selbst oder der unter 'Lüften mit' verknüpfte."""
+        if self._vent_until(room_id, now) is not None:
+            return room_id
+        other = (self.rooms.get(room_id) or {}).get("vent_with")
+        if other and self._vent_until(other, now) is not None:
+            return other
+        return None
+
+    def vent_status(self, room_id: str, now: datetime) -> dict[str, Any]:
+        room = self.rooms.get(room_id) or {}
+        src = self._vent_room_for(room_id, now)
+        until = self._vent_until(src, now) if src else None
+        return {
+            "active": src is not None,
+            "own": src == room_id,
+            "with": room.get("vent_with"),
+            "until": until.isoformat() if until else None,
+            "since": (self.vent_state.get(src) or {}).get("since") if src else None,
+            "outputs": list(room.get("vent_outputs") or []),
+        }
+
+    async def async_set_vent(self, room_id: str, on: bool, minutes: int | None = None) -> None:
+        """Lüften starten (Dauer: minutes oder Einstellung) bzw. beenden."""
+        if room_id not in self.rooms:
+            raise PlanError(f"Unbekannter Raum {room_id}")
+        self._vent_set(room_id, on, minutes)
+        self._vent_last_sync = None   # Ausgänge sofort nachziehen
+        await self._changed()
+
+    def _vent_set(self, room_id: str, on: bool, minutes: int | None = None) -> None:
+        now = dt_util.now()
+        was = self._vent_until(room_id, now) is not None
+        if on:
+            mins = int(minutes or self.vent_settings["duration"])
+            self.vent_state[room_id] = {"until": (now + timedelta(minutes=mins)).isoformat(),
+                                        "since": now.isoformat()}
+            _LOGGER.info("Heizplan: Lüften %s für %s min", room_id, mins)
+        else:
+            self.vent_state.pop(room_id, None)
+            if was:
+                self._vent_finished(room_id)
+                _LOGGER.info("Heizplan: Lüften %s beendet", room_id)
+
+    def _vent_finished(self, room_id: str) -> None:
+        """Nach dem Lüften: Sollwert und Komfort neu schreiben (auch für verknüpfte Räume)."""
+        for rid, room in self.rooms.items():
+            if rid == room_id or room.get("vent_with") == room_id:
+                self._last_written.pop(rid, None)
+                if room_kind(room) == KIND_CLIMATE:
+                    self._restore_pending.add(rid)
+
+    async def async_set_vent_settings(self, cfg: dict[str, Any]) -> None:
+        self.vent_settings = normalize_vent_settings({**self.vent_settings, **cfg})
+        await self._changed()
+
+    async def _vent_apply(self, now: datetime) -> bool:
+        """Abgelaufenes Lüften beenden, Ausgänge auf den Soll-Zustand bringen. True = Zustand geändert."""
+        changed = False
+        for room_id in list(self.vent_state):
+            if room_id not in self.rooms or self._vent_until(room_id, now) is None:
+                self.vent_state.pop(room_id, None)
+                if room_id in self.rooms:
+                    self._vent_finished(room_id)
+                    _LOGGER.info("Heizplan: Lüften %s abgelaufen", room_id)
+                changed = True
+        resend = self._vent_last_sync is None or now - self._vent_last_sync >= timedelta(minutes=VENT_RESEND)
+        for room_id, room in self.rooms.items():
+            want_on = self._vent_until(room_id, now) is not None
+            for out in room.get("vent_outputs") or []:
+                state = self.hass.states.get(out)
+                if state is None or state.state == "unavailable":
+                    continue
+                is_on = state.state == STATE_ON
+                if resend or is_on != want_on:
+                    await self._vent_switch(out, want_on, now)
+        if resend:
+            self._vent_last_sync = now
+        return changed
+
+    async def _vent_switch(self, entity_id: str, on: bool, now: datetime) -> None:
+        try:
+            await self.hass.services.async_call(
+                entity_id.split(".", 1)[0], "turn_on" if on else "turn_off",
+                {ATTR_ENTITY_ID: entity_id}, blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001 – ein Ausgang soll andere nicht stoppen
+            _LOGGER.error("Heizplan: Lüften-Ausgang %s schalten fehlgeschlagen: %s", entity_id, err)
+
+    async def _vent_output_changed(self, event: Event) -> None:
+        """Ausgang von außen geschaltet (z. B. Taster/Pad am Fensterkontakt): Lüften starten bzw. beenden.
+
+        Entscheidend ist der AKTUELLE Zustand des Ausgangs gegenüber dem Soll (Lüften an/aus):
+        eigene Schaltbefehle und verspätete Ereignisse passen zum Soll und werden ignoriert.
+        """
+        ent = event.data.get("entity_id")
+        old, new = event.data.get("old_state"), event.data.get("new_state")
+        if new is None or old is None or old.state not in ("on", "off") or new.state not in ("on", "off"):
+            return   # Start/Neustart/unavailable: nichts ableiten
+        cur = self.hass.states.get(ent)
+        if cur is None or cur.state not in ("on", "off"):
+            return
+        now = dt_util.now()
+        acted = False
+        for room_id, room in self.rooms.items():
+            if ent not in (room.get("vent_outputs") or []):
+                continue
+            active = self._vent_until(room_id, now) is not None
+            if cur.state == "on" and not active:
+                self._vent_set(room_id, True)
+            elif cur.state == "off" and active:
+                self._vent_set(room_id, False)
+            else:
+                continue
+            acted = True
+        if acted:
+            self._vent_last_sync = None   # übrige Ausgänge des Raums nachziehen
+            await self._changed()
+
     # ------------------------------------------------------------------ Änderungen
     async def async_flush(self) -> None:
         await self._store.async_save(self.as_dict())
@@ -856,9 +1024,11 @@ class HeizplanManager:
                                 valve: str | None = None, follow_season: bool | None = None,
                                 months: list[int] | None = None, aux_climate: str | None = None,
                                 aux_fan_mode: str | None = None, aux_fan_switch: str | None = None,
-                                aux_enabled: bool | None = None) -> None:
+                                aux_enabled: bool | None = None, vent_outputs: list[str] | None = None,
+                                vent_with: str | None = None) -> None:
         room = self.rooms[room_id]
         had_aux = bool(room.get("aux_climate"))
+        old_outputs = list(room.get("vent_outputs") or [])
         if name is not None:
             room["name"] = name
         if valve is not None:
@@ -881,13 +1051,27 @@ class HeizplanManager:
             room["aux_fan_switch"] = aux_fan_switch or None
         if aux_enabled is not None:
             room["aux_enabled"] = bool(aux_enabled)
-        await self._changed(rooms_changed=had_aux != bool(room.get("aux_climate")))
+        if vent_outputs is not None:
+            outs = [o for o in vent_outputs if o]
+            for out in outs:
+                if out.split(".", 1)[0] not in ("switch", "input_boolean"):
+                    raise PlanError("Lüften-Ausgang muss switch.* oder input_boolean.* sein")
+            room["vent_outputs"] = outs or None
+        if vent_with is not None:
+            if vent_with and vent_with not in self.rooms:
+                raise PlanError(f"Lüften mit: unbekannter Raum {vent_with}")
+            if vent_with == room_id:
+                raise PlanError("Lüften mit: nicht der Raum selbst")
+            room["vent_with"] = vent_with or None
+        await self._changed(rooms_changed=had_aux != bool(room.get("aux_climate"))
+                            or old_outputs != list(room.get("vent_outputs") or []))
 
     async def async_remove_room(self, room_id: str) -> None:
         self.rooms.pop(room_id)
         self.overrides.pop(room_id, None)
         self._last_written.pop(room_id, None)
         self.aux_state.pop(room_id, None)
+        self.vent_state.pop(room_id, None)
         await self._changed(rooms_changed=True)
 
     async def async_set_plan(self, room_id: str, plan: dict[str, Any]) -> None:

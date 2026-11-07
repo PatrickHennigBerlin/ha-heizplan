@@ -29,6 +29,7 @@ async def async_setup_entry(
                           -10, 20, 0.5, UnitOfTemperature.CELSIUS),
         HeizplanAuxNumber(manager, "boost_max", "Boost mit Wärmepumpe Höchstdauer", "mdi:timer-outline",
                           15, 720, 15, UnitOfTime.MINUTES),
+        HeizplanVentDuration(manager),
     ])
 
 
@@ -79,6 +80,34 @@ class HeizplanAuxNumber(HeizplanEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         try:
             await self.manager.async_set_aux_settings({self._key: value})
+        except ValueError as err:
+            from homeassistant.exceptions import ServiceValidationError
+            raise ServiceValidationError(str(err)) from err
+
+
+class HeizplanVentDuration(HeizplanEntity, NumberEntity):
+    """Wie lange Lüften dauert (gilt für alle Räume)."""
+
+    _attr_mode = NumberMode.BOX
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_icon = "mdi:window-open-variant"
+    _attr_name = "Lüften Dauer"
+    _attr_native_min_value = 5
+    _attr_native_max_value = 480
+    _attr_native_step = 5
+    _attr_native_unit_of_measurement = UnitOfTime.MINUTES
+
+    def __init__(self, manager: HeizplanManager) -> None:
+        super().__init__(manager)
+        self._attr_unique_id = f"{manager.entry.entry_id}_lueften_dauer"
+
+    @property
+    def native_value(self) -> float:
+        return self.manager.vent_settings["duration"]
+
+    async def async_set_native_value(self, value: float) -> None:
+        try:
+            await self.manager.async_set_vent_settings({"duration": int(value)})
         except ValueError as err:
             from homeassistant.exceptions import ServiceValidationError
             raise ServiceValidationError(str(err)) from err

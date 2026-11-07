@@ -1,7 +1,7 @@
 """Konstanten für Heizplan."""
 
 DOMAIN = "heizplan"
-VERSION = "0.6.1"
+VERSION = "0.7.0"
 
 STORAGE_KEY = "heizplan"
 STORAGE_VERSION = 1
@@ -20,6 +20,7 @@ SOURCE_PLAN = "plan"
 SOURCE_AWAY = "away"
 SOURCE_OVERRIDE = "override"
 SOURCE_INACTIVE = "inactive"
+SOURCE_VENT = "vent"          # Lüften: Heizung aus, Ausgänge (z. B. Fensterkontakt) an
 
 DEFAULT_AWAY_TEMP = 17.0
 DEFAULT_TEMP = 20.0
@@ -35,3 +36,7 @@ DEFAULT_COMFORT_PRESET = "comfort"
 SIGNAL_UPDATED = "heizplan_updated"
 EVENT_UPDATED = "heizplan_updated"
 
+
+# Lüften
+DEFAULT_VENT_SETTINGS = {"duration": 60}   # Minuten
+VENT_RESEND = 15                           # Ausgänge so oft (min) erneut senden

@@ -168,6 +168,9 @@ def _register_services(hass: HomeAssistant) -> None:
                 aux_fan_mode=call.data.get("aux_fan_mode"),
                 aux_fan_switch=call.data.get("aux_fan_switch"),
                 aux_enabled=call.data.get("aux_enabled"),
+                vent_outputs=call.data.get("vent_outputs"),
+                vent_with=(_resolve_room(manager, call.data["vent_with"]) if call.data.get("vent_with") else
+                           ("" if "vent_with" in call.data else None)),
             )
         except PlanError as err:
             raise ServiceValidationError(str(err)) from err
@@ -215,6 +218,9 @@ def _register_services(hass: HomeAssistant) -> None:
                 vol.Optional("aux_fan_mode"): cv.string,
                 vol.Optional("aux_fan_switch"): vol.Any(cv.entity_id, ""),
                 vol.Optional("aux_enabled"): cv.boolean,
+                # Lüften: Ausgänge (an während des Lüftens, [] = keine), An/Aus-Raum lüftet mit Raum X ("" = keiner)
+                vol.Optional("vent_outputs"): vol.All(cv.ensure_list, [cv.entity_id]),
+                vol.Optional("vent_with"): cv.string,
             }
         ),
     )
@@ -229,6 +235,26 @@ def _register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, "boost", boost,
         schema=vol.Schema({vol.Required("room"): cv.string, vol.Optional("on", default=True): cv.boolean}),
+    )
+
+    async def start_ventilation(call: ServiceCall) -> None:
+        manager = get_manager(hass)
+        try:
+            await manager.async_set_vent(_resolve_room(manager, call.data["room"]), True, call.data.get("minutes"))
+        except PlanError as err:
+            raise ServiceValidationError(str(err)) from err
+
+    async def stop_ventilation(call: ServiceCall) -> None:
+        manager = get_manager(hass)
+        await manager.async_set_vent(_resolve_room(manager, call.data["room"]), False)
+
+    hass.services.async_register(
+        DOMAIN, "start_ventilation", start_ventilation,
+        schema=vol.Schema({vol.Required("room"): cv.string,
+                           vol.Optional("minutes"): vol.All(vol.Coerce(int), vol.Range(1, 480))}),
+    )
+    hass.services.async_register(
+        DOMAIN, "stop_ventilation", stop_ventilation, schema=vol.Schema({vol.Required("room"): cv.string})
     )
 
     async def set_aux(call: ServiceCall) -> None:
